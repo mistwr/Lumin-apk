@@ -1,22 +1,22 @@
 package com.lumin.app;
 
 import android.accessibilityservice.AccessibilityButtonController;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import java.util.Locale;
 
-/**
- * Samsung-facing accessibility entry point.
- * The base service owns the SOFIA LIVE overlay and transcript driver.
- * This subclass adds the accessibility shortcut and the opt-in AI Calling
- * hand-off from a normal GSM call into Samsung Text Call.
- */
+/** Samsung bridge for AI Calling -> Samsung Text Call. */
 public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService {
     private SharedPreferences control;
     private SharedPreferences diag;
+    private final Handler main = new Handler(Looper.getMainLooper());
     private long lastAutoTapAt = 0L;
+    private boolean openingScheduled = false;
 
     @Override public void onServiceConnected() {
         super.onServiceConnected();
@@ -58,6 +58,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         long age = System.currentTimeMillis() - armedAt;
         if (age < 0L || age > 120_000L) {
             control.edit().remove("auto_text_call_armed_at").apply();
+            openingScheduled = false;
             diag.edit().putString("auto_text_call", "EXPIRADO").apply();
             return;
         }
@@ -66,19 +67,21 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         if (root == null || root.getPackageName() == null ||
                 !"com.samsung.android.incallui".contentEquals(root.getPackageName())) return;
 
-        // If the editable reply composer exists, Text Call is already active.
         if (hasEditable(root)) {
-            control.edit().remove("auto_text_call_armed_at").apply();
-            diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO").apply();
+            if (!openingScheduled) {
+                openingScheduled = true;
+                control.edit().remove("auto_text_call_armed_at").apply();
+                diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_AGENDADA").apply();
+                // Give Samsung's mandatory Text Call disclosure time to play first.
+                main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, 2600L);
+            }
             return;
         }
 
         long now = System.currentTimeMillis();
         if (now - lastAutoTapAt < 700L) return;
 
-        AccessibilityNodeInfo textCall = findAction(root, new String[]{
-                "chamada de texto", "text call"
-        });
+        AccessibilityNodeInfo textCall = findAction(root, new String[]{"chamada de texto", "text call"});
         if (textCall != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(textCall);
             if (clickable != null) {
@@ -89,10 +92,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
             }
         }
 
-        // On some One UI layouts Text Call first lives behind Call Assist.
-        AccessibilityNodeInfo callAssist = findAction(root, new String[]{
-                "assistente de chamada", "call assist"
-        });
+        AccessibilityNodeInfo callAssist = findAction(root, new String[]{"assistente de chamada", "call assist"});
         if (callAssist != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(callAssist);
             if (clickable != null) {
@@ -104,6 +104,23 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         }
 
         diag.edit().putString("auto_text_call", "A_AGUARDAR_BOTAO").apply();
+    }
+
+    private void sendConfiguredOpeningIfStillInTextCall() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null || root.getPackageName() == null ||
+                !"com.samsung.android.incallui".contentEquals(root.getPackageName()) || !hasEditable(root)) {
+            diag.edit().putString("auto_text_call", "ABERTURA_CANCELADA · TEXT_CALL_FECHADO").apply();
+            openingScheduled = false;
+            return;
+        }
+        String opening = control.getString("agent_opening", SofiaAgentProfile.opening()).trim();
+        if (opening.isEmpty()) return;
+        Intent i = new Intent(SofiaAccessibilityService.ACTION_SEND_REPLY);
+        i.setPackage(getPackageName());
+        i.putExtra(SofiaAccessibilityService.EXTRA_REPLY, opening);
+        sendBroadcast(i);
+        diag.edit().putString("auto_text_call", "ABERTURA_ENVIADA").apply();
     }
 
     private AccessibilityNodeInfo findAction(AccessibilityNodeInfo node, String[] needles) {
