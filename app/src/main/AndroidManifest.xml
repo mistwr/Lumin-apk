@@ -22,7 +22,7 @@
         </activity>
 
         <service
-            android:name=".SofiaAccessibilityService"
+            android:name=".SofiaOverlayAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>
