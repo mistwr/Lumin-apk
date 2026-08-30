@@ -21,6 +21,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private String transcript = "";
     private volatile boolean busy = false;
     private SharedPreferences diag;
+    private long lastTextCallReadyAt = 0L;
 
     @Override public void onServiceConnected() {
         super.onServiceConnected();
@@ -37,9 +38,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
         AccessibilityNodeInfo edit = findEditable(root);
         if (edit == null) {
-            log("surface", "Samsung aberto; campo Text Call ainda não encontrado");
+            if (System.currentTimeMillis() - lastTextCallReadyAt > 2500L) {
+                log("surface", "Samsung aberto; à espera do campo Text Call");
+            }
             return;
         }
+        lastTextCallReadyAt = System.currentTimeMillis();
         log("surface", "TEXT_CALL_READY");
 
         String customer = findCustomerCandidate(root, edit);
@@ -93,19 +97,23 @@ public class SofiaAccessibilityService extends AccessibilityService {
             String s = texts.get(i).trim();
             if (s.length() < 2 || s.length() > 260) continue;
             String l = s.toLowerCase();
-            if (isChrome(l)) continue;
+            if (isSamsungChrome(l)) continue;
             if (s.equals(memory.getLastAssistant())) continue;
             return s;
         }
         return "";
     }
 
-    private boolean isChrome(String l) {
+    private boolean isSamsungChrome(String l) {
         return l.contains("mudar para chamada") || l.contains("desligar") || l.contains("teclado") ||
                 l.contains("altifalante") || l.contains("adicionar chamada") || l.contains("bluetooth") ||
-                l.equals("escrever") || l.contains("chamada de texto") || l.contains("mais") ||
+                l.equals("escrever") || l.contains("chamada de texto") || l.equals("mais") ||
+                l.equals("repetir") || l.equals("reproduzir") || l.equals("parar") || l.equals("cancelar") ||
+                l.equals("enviar") || l.equals("responder") || l.equals("voltar") || l.equals("fechar") ||
                 l.contains("urgente") || l.contains("liga-lhe mais tarde") || l.contains("quem fala") ||
-                l.matches("\\d{1,2}:\\d{2}") || l.contains("minutos") || l.contains("segundos");
+                l.contains("mensagem sugerida") || l.contains("sugestão") || l.contains("assistente de chamada") ||
+                l.matches("\\d{1,2}:\\d{2}") || l.matches("\\d{1,2}:\\d{2}:\\d{2}") ||
+                l.contains("minutos") || l.contains("segundos");
     }
 
     private void collectTexts(AccessibilityNodeInfo node, List<String> out, AccessibilityNodeInfo edit) {
@@ -121,6 +129,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
             AccessibilityNodeInfo edit = findEditable(root);
             if (edit == null) { log("last_error", "send: edit=null"); return; }
 
+            lastTextCallReadyAt = System.currentTimeMillis();
+            log("surface", "TEXT_CALL_READY");
             edit.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
             edit.performAction(AccessibilityNodeInfo.ACTION_CLICK);
             Bundle args = new Bundle();
@@ -143,6 +153,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
             if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 log("send", "BUTTON_OK");
+                log("surface", "TEXT_CALL_READY");
                 return;
             }
         }
@@ -151,6 +162,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             boolean ime = edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
             if (ime) {
                 log("send", "IME_ENTER_OK");
+                log("surface", "TEXT_CALL_READY");
                 return;
             }
         }
