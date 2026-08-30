@@ -1,6 +1,7 @@
 package com.lumin.app;
 
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -36,10 +37,8 @@ public class MainActivity extends AppCompatActivity {
         root.setPadding(dp(24), dp(34), dp(24), dp(28));
         scroll.addView(root);
 
-        TextView brand = text("SOFIA", 42, Color.WHITE, true);
-        root.addView(brand);
-        TextView sub = text("MyPoupar Intelligence · Build 53", 17, Color.rgb(161, 173, 218), false);
-        root.addView(sub);
+        root.addView(text("SOFIA", 42, Color.WHITE, true));
+        root.addView(text("MyPoupar Intelligence · Build 53.1", 17, Color.rgb(161, 173, 218), false));
 
         TextView hero = text("A consultora de IA que conversa, qualifica e prepara vendas por ti.", 24, Color.WHITE, true);
         LinearLayout.LayoutParams heroP = new LinearLayout.LayoutParams(-1, -2); heroP.topMargin = dp(30); hero.setLayoutParams(heroP);
@@ -66,16 +65,30 @@ public class MainActivity extends AppCompatActivity {
         root.addView(phone, buttonParams());
 
         Button dev = button("Developer / Diagnóstico");
-        dev.setOnClickListener(v -> {
-            boolean configured = !BuildConfig.SUPABASE_URL.isEmpty() && !BuildConfig.SUPABASE_ANON_KEY.isEmpty() && !BuildConfig.SUPABASE_ACCESS_TOKEN.isEmpty();
-            status.setText("Samsung Bridge: " + (isAccessibilityEnabled() ? "ATIVO" : "INATIVO") + "\nQwen: " + BuildConfig.QWEN_ENDPOINT + "\nSD Dialer Sync: " + (configured ? "CONFIGURADO" : "A CONFIGURAR"));
-        });
+        dev.setOnClickListener(v -> showDiagnostics());
         root.addView(dev, buttonParams());
 
-        TextView footer = text("A tecnologia fica escondida durante a utilização normal. O cliente vê apenas a conversa; o diagnóstico fica aqui.", 14, Color.rgb(142, 151, 183), false);
+        TextView footer = text("A tecnologia fica escondida durante a utilização normal. Em Diagnóstico podes ver exatamente onde a ponte Samsung parou.", 14, Color.rgb(142, 151, 183), false);
         LinearLayout.LayoutParams footP = new LinearLayout.LayoutParams(-1, -2); footP.topMargin = dp(28); footer.setLayoutParams(footP);
         root.addView(footer);
         return scroll;
+    }
+
+    private void showDiagnostics() {
+        boolean configured = !BuildConfig.SUPABASE_URL.isEmpty() && !BuildConfig.SUPABASE_ANON_KEY.isEmpty() && !BuildConfig.SUPABASE_ACCESS_TOKEN.isEmpty();
+        SharedPreferences d = getSharedPreferences("sofia_diag", MODE_PRIVATE);
+        String report = "Samsung Bridge: " + (isAccessibilityEnabled() ? "ATIVO" : "INATIVO") +
+                "\nSurface: " + d.getString("surface", "—") +
+                "\nÚltimo cliente: " + d.getString("last_customer", "—") +
+                "\nCaminho: " + d.getString("path", "—") +
+                "\nQwen: " + d.getString("qwen", "—") +
+                "\nSET_TEXT: " + d.getString("set_text", "—") +
+                "\nSEND: " + d.getString("send", "—") +
+                "\nÚltima resposta: " + d.getString("last_reply", "—") +
+                "\nErro: " + d.getString("last_error", "—") +
+                "\nEndpoint: " + BuildConfig.QWEN_ENDPOINT +
+                "\nSD Dialer Sync: " + (configured ? "CONFIGURADO" : "A CONFIGURAR");
+        status.setText(report);
     }
 
     private void refreshStatus() {
