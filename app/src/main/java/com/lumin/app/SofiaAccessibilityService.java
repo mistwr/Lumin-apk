@@ -32,6 +32,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private String lastCustomer = "";
     private String transcript = "";
     private volatile boolean busy = false;
+    private volatile String pendingCustomer = "";
     private SharedPreferences diag;
     private SharedPreferences control;
     private long lastTextCallReadyAt = 0L;
@@ -74,6 +75,25 @@ public class SofiaAccessibilityService extends AccessibilityService {
         String customer = findCustomerCandidate(root, edit);
         if (customer.isEmpty() || customer.equals(memory.getLastAssistant())) return;
 
+        // Do not lose a new utterance while Qwen is still generating the previous reply.
+        // Keep only the newest pending utterance because Samsung may fire many duplicate events.
+        if (busy) {
+            if (!customer.equals(lastCustomer) && !customer.equals(pendingCustomer)) {
+                pendingCustomer = customer;
+                log("pending_customer", customer);
+                log("path", "QUEUED_WHILE_AI_BUSY");
+            }
+            return;
+        }
+
+        processCustomer(customer);
+    }
+
+    private void processCustomer(String customer) {
+        if (customer == null) return;
+        customer = customer.trim();
+        if (customer.isEmpty() || customer.equals(lastCustomer) || customer.equals(memory.getLastAssistant())) return;
+
         lastCustomer = customer;
         log("last_customer", customer);
         appendTranscript("Cliente", customer);
@@ -93,10 +113,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
             return;
         }
 
-        if (busy) {
-            log("path", "WAITING_AI");
-            return;
-        }
         busy = true;
         log("path", "QWEN");
         final String prompt = SofiaEngine.buildPrompt(customer, memory);
@@ -111,8 +127,17 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 handleGeneratedReply(fallback(), false, "QUALIFICATION", mode);
             } finally {
                 busy = false;
+                drainPendingCustomer();
             }
         });
+    }
+
+    private void drainPendingCustomer() {
+        String queued = pendingCustomer;
+        pendingCustomer = "";
+        if (queued == null || queued.trim().isEmpty()) return;
+        log("path", "PROCESSING_QUEUED_CUSTOMER");
+        main.postDelayed(() -> processCustomer(queued), 220L);
     }
 
     private void handleGeneratedReply(String reply, boolean handoff, String stage, String mode) {
@@ -153,10 +178,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
             String l = s.toLowerCase(java.util.Locale.ROOT);
             if (isSamsungChrome(l)) continue;
             if (s.equals(lastAssistant)) continue;
-            // Crucial: Samsung suggestion chips remain permanently in the tree.
-            // If the newest visible node is the same stale value as before, keep
-            // scanning instead of returning it and blocking the real new utterance.
             if (s.equals(lastCustomer)) continue;
+            if (s.equals(pendingCustomer)) continue;
             return s;
         }
         return "";
