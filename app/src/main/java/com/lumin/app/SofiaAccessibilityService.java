@@ -29,6 +29,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private final SofiaMemory memory = new SofiaMemory();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final List<String> recentCustomers = new ArrayList<>();
     private String lastCustomer = "";
     private String transcript = "";
     private volatile boolean busy = false;
@@ -75,10 +76,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
         String customer = findCustomerCandidate(root, edit);
         if (customer.isEmpty() || customer.equals(memory.getLastAssistant())) return;
 
-        // Do not lose a new utterance while Qwen is still generating the previous reply.
-        // Keep only the newest pending utterance because Samsung may fire many duplicate events.
         if (busy) {
-            if (!customer.equals(lastCustomer) && !customer.equals(pendingCustomer)) {
+            if (!customer.equals(lastCustomer) && !customer.equals(pendingCustomer) && !recentCustomers.contains(customer)) {
                 pendingCustomer = customer;
                 log("pending_customer", customer);
                 log("path", "QUEUED_WHILE_AI_BUSY");
@@ -92,9 +91,11 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private void processCustomer(String customer) {
         if (customer == null) return;
         customer = customer.trim();
-        if (customer.isEmpty() || customer.equals(lastCustomer) || customer.equals(memory.getLastAssistant())) return;
+        if (customer.isEmpty() || customer.equals(lastCustomer) || customer.equals(memory.getLastAssistant()) || recentCustomers.contains(customer)) return;
 
         lastCustomer = customer;
+        recentCustomers.add(customer);
+        if (recentCustomers.size() > 14) recentCustomers.remove(0);
         log("last_customer", customer);
         appendTranscript("Cliente", customer);
         SofiaEngine.learnFreeText(customer, memory);
@@ -137,7 +138,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         pendingCustomer = "";
         if (queued == null || queued.trim().isEmpty()) return;
         log("path", "PROCESSING_QUEUED_CUSTOMER");
-        main.postDelayed(() -> processCustomer(queued), 220L);
+        main.postDelayed(() -> processCustomer(queued), 120L);
     }
 
     private void handleGeneratedReply(String reply, boolean handoff, String stage, String mode) {
@@ -180,6 +181,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (s.equals(lastAssistant)) continue;
             if (s.equals(lastCustomer)) continue;
             if (s.equals(pendingCustomer)) continue;
+            if (recentCustomers.contains(s)) continue;
             return s;
         }
         return "";
@@ -194,6 +196,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 l.contains("urgente") || l.contains("liga-lhe mais tarde") || l.contains("ligar-lhe mais tarde") ||
                 l.contains("ligue-lhe mais tarde") || l.contains("quem fala") || l.contains("mensagem sugerida") ||
                 l.contains("sugestão") || l.contains("assistente de chamada") ||
+                l.contains("estou a utilizar um assistente de voz") || l.contains("converter a sua voz em texto") ||
+                l.contains("responder-lhe. se quiser continuar") || l.contains("mantenha-se em linha") ||
                 l.matches("\\d{1,2}:\\d{2}") || l.matches("\\d{1,2}:\\d{2}:\\d{2}") ||
                 l.contains("minutos") || l.contains("segundos");
     }
@@ -226,7 +230,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 memory.setLastAssistant(reply);
                 control.edit().putString("suggested_reply", "").apply();
             }
-            main.postDelayed(() -> pressSend(reply, 0), 180);
+            main.postDelayed(() -> pressSend(reply, 0), 120);
         });
     }
 
@@ -239,13 +243,13 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (attempt == 0 && send != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
             if (clickable != null) clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            main.postDelayed(() -> verifySent(expectedReply, 1), 350);
+            main.postDelayed(() -> verifySent(expectedReply, 1), 260);
             return;
         }
 
         if (attempt <= 1 && edit != null && Build.VERSION.SDK_INT >= 30) {
             edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
-            main.postDelayed(() -> verifySent(expectedReply, 2), 300);
+            main.postDelayed(() -> verifySent(expectedReply, 2), 240);
             return;
         }
 
@@ -255,10 +259,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (!r.isEmpty()) {
                 Path path = new Path();
                 path.moveTo(r.centerX(), r.centerY());
-                GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 80);
+                GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 60);
                 boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
                 log("send", dispatched ? "GESTURE_DISPATCHED" : "GESTURE_FAILED");
-                main.postDelayed(() -> verifySent(expectedReply, 3), 400);
+                main.postDelayed(() -> verifySent(expectedReply, 3), 300);
                 return;
             }
         }
