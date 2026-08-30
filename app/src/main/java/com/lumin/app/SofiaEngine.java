@@ -24,7 +24,7 @@ public class SofiaEngine {
         String t = customer.trim();
         String n = normalize(t);
 
-        if (n.contains("poupar") || n.contains("quero falar com") || n.contains("consultor")) {
+        if (n.contains("poupar") || n.contains("quero falar com") || n.contains("consultor") || n.contains("falar com uma pessoa")) {
             memory.put("handoff", true);
             return new Decision("Perfeito. Vou deixar o pedido preparado para um consultor MyPoupar verificar consigo a melhor opção.", true, "HANDOFF", true);
         }
@@ -71,11 +71,13 @@ public class SofiaEngine {
     public static String buildPrompt(String customer, SofiaMemory memory) {
         return "És a SOFIA, consultora MyPoupar. Fala em português de Portugal, como uma pessoa ao telefone. " +
                 "Responde normalmente numa frase curta e faz no máximo uma pergunta. Nunca repitas factos já conhecidos. " +
+                "Mantém a conversa e qualifica o cliente passo a passo. NÃO termines a conversa nem encaminhes para consultor apenas porque o cliente pergunta 'qual é a melhor opção', 'quanto fica' ou pede uma recomendação. " +
+                "Só deves fazer handoff para humano quando o cliente pedir explicitamente uma pessoa/consultor ou disser 'poupar'. Caso contrário continua a analisar e faz a próxima pergunta útil. " +
                 "Factos conhecidos: " + memory.summary() + ". " +
                 "Cliente disse: " + customer + ". " +
                 "A tua resposta anterior foi: " + memory.getLastAssistant() + ". " +
                 "Se faltar informação, faz apenas a próxima pergunta útil. Se houver objeção, responde com empatia e objetividade. " +
-                "Não inventes preços. Se o cliente pedir preço atual, diz que vais confirmar nas condições disponíveis.";
+                "Não inventes preços. Se o cliente pedir preço atual, diz que precisas dos dados necessários para comparar e continua a qualificação.";
     }
 
     private static String detectOperator(String n) {
