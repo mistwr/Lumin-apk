@@ -38,12 +38,12 @@ public class SetupActivity extends AppCompatActivity {
         scroll.addView(root);
 
         root.addView(text("SOFIA", 42, Color.WHITE, true));
-        root.addView(text("MyPoupar · Samsung Transcript AI", 16, Color.rgb(130,145,205), true));
-        TextView badge = text("BUILD 60.1 · GSM + TRANSCRIÇÃO + IA", 12, Color.rgb(106,235,183), true);
+        root.addView(text("MyPoupar · AI Calling", 16, Color.rgb(130,145,205), true));
+        TextView badge = text("BUILD 60.2 · GSM + SAMSUNG TEXT CALL + LLM", 12, Color.rgb(106,235,183), true);
         badge.setPadding(0, dp(8), 0, dp(18));
         root.addView(badge);
 
-        TextView intro = text("O Samsung Text Call ouve e fala. A SOFIA lê a transcrição, decide a resposta e envia-a automaticamente durante a chamada.", 16, Color.rgb(222,228,245), false);
+        TextView intro = text("Cria o agente, define o script, escolhe o cliente e carrega CHAMAR. A Samsung transcreve e fala; a SOFIA conduz a conversa.", 16, Color.rgb(222,228,245), false);
         intro.setPadding(0, 0, 0, dp(18));
         root.addView(intro);
 
@@ -58,8 +58,8 @@ public class SetupActivity extends AppCompatActivity {
         statusCard.addView(modeState);
         root.addView(statusCard);
 
-        Button call = primaryButton("ABRIR SAMSUNG / INICIAR CHAMADA");
-        call.setOnClickListener(v -> openSamsungPhone());
+        Button call = primaryButton("ABRIR SOFIA AI CALLING");
+        call.setOnClickListener(v -> startActivity(new Intent(this, SofiaAiCallingActivity.class)));
         root.addView(call, primaryParams());
 
         root.addView(section("CONTROLO DA SOFIA"));
@@ -98,7 +98,7 @@ public class SetupActivity extends AppCompatActivity {
         console.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         root.addView(console, buttonParams());
 
-        TextView note = text("Durante o Text Call aparece o painel SOFIA LIVE por cima da chamada. O áudio continua a ser tratado pelo próprio Samsung; a SOFIA trabalha sobre a transcrição.", 13, Color.rgb(106,235,183), false);
+        TextView note = text("Ao iniciares uma chamada pela SOFIA, o driver tenta abrir o Samsung Text Call automaticamente. O aviso de utilização do assistente continua a ser reproduzido pela Samsung.", 13, Color.rgb(106,235,183), false);
         note.setPadding(0, dp(22), 0, 0);
         root.addView(note);
         return scroll;
@@ -176,12 +176,6 @@ public class SetupActivity extends AppCompatActivity {
                 aiState.setTextColor(r.online ? Color.rgb(106,235,183) : Color.rgb(255,125,125));
             });
         });
-    }
-
-    private void openSamsungPhone() {
-        Intent i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.dialer");
-        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.incallui");
-        if (i != null) startActivity(i);
     }
 
     private boolean isAccessibilityEnabled() {
