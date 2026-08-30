@@ -75,7 +75,7 @@ object LocalQwenManager {
                     readTimeout = 30_000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
-                    setRequestProperty("User-Agent", "SOFIA-Android/5.6.1")
+                    setRequestProperty("User-Agent", "SOFIA-Android/5.6.4")
                 }
                 connection.connect()
                 val code = connection.responseCode
@@ -122,14 +122,14 @@ object LocalQwenManager {
             loadedModel?.let { if (it.isLoaded) return@withLock it }
             val file = modelFile(context)
             if (!isInstalled(context)) throw IllegalStateException("Cérebro local ainda não instalado")
-            val threads = Runtime.getRuntime().availableProcessors().coerceIn(4, 8)
+            val threads = Runtime.getRuntime().availableProcessors().coerceIn(6, 8)
             val cfg = LlamaConfig(
-                contextSize = 2048,
+                contextSize = 1024,
                 threads = threads,
                 gpuLayers = 0,
-                temperature = 0.55f,
-                topP = 0.9f,
-                topK = 40
+                temperature = 0.35f,
+                topP = 0.82f,
+                topK = 24
             )
             Llama.loadModel(file.absolutePath, cfg).also { loadedModel = it }
         }
@@ -141,8 +141,8 @@ object LocalQwenManager {
         val result = Llama.complete(
             model = model,
             prompt = prompt,
-            systemPrompt = "És a SOFIA, consultora comercial MyPoupar em português de Portugal. Responde de forma natural, curta e útil, normalmente em uma ou duas frases. Faz apenas uma pergunta de cada vez e nunca repitas factos já conhecidos.",
-            maxTokens = 72
+            systemPrompt = "És a SOFIA, consultora MyPoupar em português de Portugal. Responde imediatamente, numa frase curta, natural e útil. No máximo uma pergunta. Não repitas informação.",
+            maxTokens = 40
         )
         lastTokensPerSecond = result.tokensPerSecond
         result.text.trim()
@@ -156,8 +156,8 @@ object LocalQwenManager {
         val result = Llama.complete(
             model = model,
             prompt = "Responde apenas: SOFIA OK",
-            systemPrompt = "Responde de forma extremamente curta.",
-            maxTokens = 8
+            systemPrompt = "Resposta curta.",
+            maxTokens = 6
         )
         lastTokensPerSecond = result.tokensPerSecond
         val ms = System.currentTimeMillis() - started
