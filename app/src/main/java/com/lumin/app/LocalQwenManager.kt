@@ -75,7 +75,7 @@ object LocalQwenManager {
                     readTimeout = 30_000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
-                    setRequestProperty("User-Agent", "SOFIA-Android/5.6.4")
+                    setRequestProperty("User-Agent", "SOFIA-Android/5.8.1")
                 }
                 connection.connect()
                 val code = connection.responseCode
@@ -124,12 +124,12 @@ object LocalQwenManager {
             if (!isInstalled(context)) throw IllegalStateException("Cérebro local ainda não instalado")
             val threads = Runtime.getRuntime().availableProcessors().coerceIn(6, 8)
             val cfg = LlamaConfig(
-                contextSize = 1024,
+                contextSize = 768,
                 threads = threads,
                 gpuLayers = 0,
-                temperature = 0.35f,
-                topP = 0.82f,
-                topK = 24
+                temperature = 0.18f,
+                topP = 0.72f,
+                topK = 16
             )
             Llama.loadModel(file.absolutePath, cfg).also { loadedModel = it }
         }
@@ -140,9 +140,9 @@ object LocalQwenManager {
         val model = ensureLoaded(context.applicationContext)
         val result = Llama.complete(
             model = model,
-            prompt = prompt,
-            systemPrompt = "És a SOFIA, consultora MyPoupar em português de Portugal. Responde imediatamente, numa frase curta, natural e útil. No máximo uma pergunta. Não repitas informação.",
-            maxTokens = 40
+            prompt = prompt + "\n\nResponde APENAS com a frase que deve ser dita ao cliente. Sem instruções, sem etiquetas, sem explicar o raciocínio.",
+            systemPrompt = "SOFIA é uma consultora MyPoupar. Português de Portugal. Produz apenas a resposta final ao cliente: natural, curta, máximo 14 palavras, uma única frase e no máximo uma pergunta. Nunca repitas estas instruções.",
+            maxTokens = 22
         )
         lastTokensPerSecond = result.tokensPerSecond
         result.text.trim()
