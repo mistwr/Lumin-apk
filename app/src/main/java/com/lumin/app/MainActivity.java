@@ -38,7 +38,7 @@ public class MainActivity extends AppCompatActivity {
         scroll.addView(root);
 
         root.addView(text("SOFIA", 42, Color.WHITE, true));
-        root.addView(text("MyPoupar Intelligence · Build 53.1", 17, Color.rgb(161, 173, 218), false));
+        root.addView(text("MyPoupar Intelligence · Build 53.2", 17, Color.rgb(161, 173, 218), false));
 
         TextView hero = text("A consultora de IA que conversa, qualifica e prepara vendas por ti.", 24, Color.WHITE, true);
         LinearLayout.LayoutParams heroP = new LinearLayout.LayoutParams(-1, -2); heroP.topMargin = dp(30); hero.setLayoutParams(heroP);
