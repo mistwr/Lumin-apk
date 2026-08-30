@@ -83,7 +83,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             log("overlay", "ERRO: " + safe(t.getMessage()));
         }
 
-        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60");
+        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60.1");
         main.removeCallbacks(samsungWatcher);
         main.post(samsungWatcher);
     }
@@ -140,8 +140,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private synchronized void enqueueCustomer(String customer) {
         if (customer == null) return;
         customer = customer.trim();
-        if (customer.isEmpty() || customer.equals(lastCustomer) || customer.equals(memory.getLastAssistant()) || recentCustomers.contains(customer)) return;
-        if (customerQueue.contains(customer)) return;
+        if (customer.isEmpty() || sameUtterance(customer, lastCustomer) || sameUtterance(customer, memory.getLastAssistant())) return;
+        for (String old : recentCustomers) if (sameUtterance(customer, old)) return;
+        for (String q : customerQueue) if (sameUtterance(customer, q)) return;
         customerQueue.offer(customer);
         log("queue", String.valueOf(customerQueue.size()));
         log("path", busy ? "QUEUED_WHILE_AI_BUSY" : "QUEUED_STABLE_UTTERANCE");
@@ -158,7 +159,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private void processCustomer(String customer) {
         customer = customer == null ? "" : customer.trim();
-        if (customer.isEmpty() || recentCustomers.contains(customer)) { drainQueue(); return; }
+        if (customer.isEmpty()) { drainQueue(); return; }
+        for (String old : recentCustomers) if (sameUtterance(customer, old)) { drainQueue(); return; }
 
         final long turnStarted = System.currentTimeMillis();
         lastCustomer = customer;
@@ -228,11 +230,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         reply = sanitizeReply(reply);
         if (reply.isEmpty()) reply = fallback();
         memory.setLastAssistant(reply);
-        control.edit()
-                .putString("suggested_reply", reply)
-                .putString("live_stage", stage == null ? "" : stage)
-                .putBoolean("live_handoff", handoff)
-                .apply();
+        control.edit().putString("suggested_reply", reply).putString("live_stage", stage == null ? "" : stage).putBoolean("live_handoff", handoff).apply();
         if ("ASSISTED".equals(mode)) {
             log("send", "WAITING_USER_APPROVAL");
             return;
@@ -247,9 +245,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         return control.getString("mode", "AUTO");
     }
 
-    private String fallback() {
-        return "Certo. Diga-me só o que gostaria de melhorar no serviço atual.";
-    }
+    private String fallback() { return "Certo. Diga-me só o que gostaria de melhorar no serviço atual."; }
 
     private void appendTranscript(String who, String text) {
         transcript += who + ": " + text + "\n";
@@ -258,28 +254,58 @@ public class SofiaAccessibilityService extends AccessibilityService {
         control.edit().putString("live_transcript", transcript).putString("live_customer", lastCustomer).apply();
     }
 
+    /**
+     * Samsung Text Call 60.1: choose the closest valid conversation bubble above
+     * the editable composer. This mirrors the real S26 layout instead of trusting
+     * traversal order, which previously picked system text and stale bubbles.
+     */
     private String findCustomerCandidate(AccessibilityNodeInfo root, AccessibilityNodeInfo edit) {
         List<NodeText> texts = new ArrayList<>();
         collectTexts(root, texts, edit);
-        String lastAssistant = memory.getLastAssistant();
         Rect editRect = new Rect();
         edit.getBoundsInScreen(editRect);
+        NodeText best = null;
+        int bestBottom = Integer.MIN_VALUE;
 
-        for (int i = texts.size() - 1; i >= 0; i--) {
-            NodeText nt = texts.get(i);
-            String s = nt.text.trim();
-            if (s.length() < 2 || s.length() > 280) continue;
+        for (NodeText nt : texts) {
+            String s = nt.text == null ? "" : nt.text.trim();
+            if (s.length() < 2 || s.length() > 220) continue;
             String l = s.toLowerCase(Locale.ROOT);
-            if (isSamsungChrome(l)) continue;
-            if (s.equals(lastAssistant) || s.equals(lastCustomer) || recentCustomers.contains(s) || customerQueue.contains(s)) continue;
-            if (looksLikePhoneNumber(s)) continue;
+            if (isSamsungChrome(l) || looksLikePhoneNumber(s)) continue;
+            if (sameUtterance(s, memory.getLastAssistant()) || sameUtterance(s, lastCustomer)) continue;
+            boolean duplicate = false;
+            for (String old : recentCustomers) if (sameUtterance(s, old)) { duplicate = true; break; }
+            if (duplicate) continue;
+            for (String q : customerQueue) if (sameUtterance(s, q)) { duplicate = true; break; }
+            if (duplicate) continue;
 
-            if (!editRect.isEmpty() && !nt.bounds.isEmpty() && nt.bounds.top >= editRect.top - 12) continue;
-            log("candidate_bounds", nt.bounds.flattenToString());
-            log("candidate_class", nt.className);
-            return s;
+            if (!editRect.isEmpty() && !nt.bounds.isEmpty()) {
+                // Must be clearly above the Samsung "Escrever resposta" composer.
+                if (nt.bounds.bottom >= editRect.top - 8) continue;
+                // Prefer the lowest valid bubble: it is the newest utterance on this UI.
+                if (nt.bounds.bottom > bestBottom) {
+                    best = nt;
+                    bestBottom = nt.bounds.bottom;
+                }
+            } else if (best == null) {
+                best = nt;
+            }
         }
-        return "";
+
+        if (best == null) return "";
+        log("candidate_bounds", best.bounds.flattenToString());
+        log("candidate_class", best.className);
+        log("candidate_strategy", "NEAREST_ABOVE_COMPOSER");
+        return best.text.trim();
+    }
+
+    private boolean sameUtterance(String a, String b) {
+        if (a == null || b == null) return false;
+        return normalizeUtterance(a).equals(normalizeUtterance(b));
+    }
+
+    private String normalizeUtterance(String s) {
+        return s.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+", " ").trim().replaceAll("\\s+", " ");
     }
 
     private boolean looksLikePhoneNumber(String s) {
@@ -290,16 +316,15 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private boolean isSamsungChrome(String l) {
         return l.contains("mudar para chamada") || l.contains("desligar") || l.contains("teclado") ||
                 l.contains("altifalante") || l.contains("adicionar chamada") || l.contains("bluetooth") ||
-                l.equals("escrever") || l.contains("chamada de texto") || l.equals("mais") ||
+                l.equals("escrever") || l.contains("escrever resposta") || l.contains("chamada de texto") || l.equals("mais") ||
                 l.equals("repetir") || l.equals("reproduzir") || l.equals("parar") || l.equals("cancelar") ||
                 l.equals("enviar") || l.equals("responder") || l.equals("voltar") || l.equals("fechar") ||
                 l.contains("urgente") || l.contains("liga-lhe mais tarde") || l.contains("ligar-lhe mais tarde") ||
                 l.contains("ligue-lhe mais tarde") || l.contains("quem fala") || l.contains("mensagem sugerida") ||
                 l.contains("sugestão") || l.contains("assistente de chamada") ||
                 l.contains("estou a utilizar um assistente de voz") || l.contains("converter a sua voz em texto") ||
-                l.contains("responder-lhe. se quiser continuar") || l.contains("mantenha-se em linha") ||
-                l.matches("\\d{1,2}:\\d{2}") || l.matches("\\d{1,2}:\\d{2}:\\d{2}") ||
-                l.contains("minutos") || l.contains("segundos");
+                l.contains("responder-lhe") || l.contains("se quiser continuar") || l.contains("mantenha-se em linha") ||
+                l.matches(".*\\b\\d{1,2}:\\d{2}(:\\d{2})?\\b.*") || l.contains("minutos") || l.contains("segundos");
     }
 
     private void collectTexts(AccessibilityNodeInfo node, List<NodeText> out, AccessibilityNodeInfo edit) {
@@ -313,9 +338,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     }
 
     private static class NodeText {
-        final String text;
-        final Rect bounds;
-        final String className;
+        final String text; final Rect bounds; final String className;
         NodeText(String text, Rect bounds, String className) { this.text = text; this.bounds = bounds; this.className = className; }
     }
 
@@ -327,7 +350,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (root == null) { log("last_error", "send: Samsung Text Call não está acessível"); return; }
             AccessibilityNodeInfo edit = findEditable(root);
             if (edit == null) { log("last_error", "send: edit=null"); return; }
-
             lastTextCallReadyAt = System.currentTimeMillis();
             edit.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
             edit.performAction(AccessibilityNodeInfo.ACTION_CLICK);
@@ -351,7 +373,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (root == null) { log("last_error", "pressSend: samsung_root=null"); return; }
         AccessibilityNodeInfo edit = findEditable(root);
         AccessibilityNodeInfo send = findSendButton(root);
-
         if (attempt == 0 && send != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
             if (clickable != null) clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
@@ -364,11 +385,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
             return;
         }
         if (send != null) {
-            Rect r = new Rect();
-            send.getBoundsInScreen(r);
+            Rect r = new Rect(); send.getBoundsInScreen(r);
             if (!r.isEmpty()) {
-                Path path = new Path();
-                path.moveTo(r.centerX(), r.centerY());
+                Path path = new Path(); path.moveTo(r.centerX(), r.centerY());
                 GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 50);
                 boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
                 log("send", dispatched ? "GESTURE_DISPATCHED" : "GESTURE_FAILED");
@@ -398,11 +417,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (isSamsungRoot(active)) return active;
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
-            if (windows != null) {
-                for (AccessibilityWindowInfo window : windows) {
-                    AccessibilityNodeInfo root = window == null ? null : window.getRoot();
-                    if (isSamsungRoot(root)) return root;
-                }
+            if (windows != null) for (AccessibilityWindowInfo window : windows) {
+                AccessibilityNodeInfo root = window == null ? null : window.getRoot();
+                if (isSamsungRoot(root)) return root;
             }
         } catch (Exception ignored) {}
         return null;
@@ -414,20 +431,14 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private AccessibilityNodeInfo clickableSelfOrParent(AccessibilityNodeInfo node) {
         AccessibilityNodeInfo cur = node;
-        for (int i = 0; i < 5 && cur != null; i++) {
-            if (cur.isClickable()) return cur;
-            cur = cur.getParent();
-        }
+        for (int i = 0; i < 5 && cur != null; i++) { if (cur.isClickable()) return cur; cur = cur.getParent(); }
         return null;
     }
 
     private AccessibilityNodeInfo findEditable(AccessibilityNodeInfo node) {
         if (node == null) return null;
         if (node.isEditable()) return node;
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo r = findEditable(node.getChild(i));
-            if (r != null) return r;
-        }
+        for (int i = 0; i < node.getChildCount(); i++) { AccessibilityNodeInfo r = findEditable(node.getChild(i)); if (r != null) return r; }
         return null;
     }
 
@@ -436,12 +447,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
         String text = node.getText() == null ? "" : node.getText().toString().toLowerCase(Locale.ROOT);
         String desc = node.getContentDescription() == null ? "" : node.getContentDescription().toString().toLowerCase(Locale.ROOT);
         String id = node.getViewIdResourceName() == null ? "" : node.getViewIdResourceName().toLowerCase(Locale.ROOT);
-        if (text.contains("enviar") || text.equals("send") || desc.contains("enviar") || desc.contains("send") ||
-                id.contains("send") || id.contains("enter") || id.contains("text_call_send")) return node;
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo r = findSendButton(node.getChild(i));
-            if (r != null) return r;
-        }
+        if (text.contains("enviar") || text.equals("send") || desc.contains("enviar") || desc.contains("send") || id.contains("send") || id.contains("enter") || id.contains("text_call_send")) return node;
+        for (int i = 0; i < node.getChildCount(); i++) { AccessibilityNodeInfo r = findSendButton(node.getChild(i)); if (r != null) return r; }
         return null;
     }
 
@@ -464,9 +471,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 payload.put("handoff_requested", handoff);
                 payload.put("requested_keyword", handoff ? "poupar" : JSONObject.NULL);
                 SupabaseSyncClient.sync(this, payload);
-            } catch (Exception e) {
-                log("sync", "ERRO: " + safe(e.getMessage()));
-            }
+            } catch (Exception e) { log("sync", "ERRO: " + safe(e.getMessage())); }
         });
     }
 
@@ -476,16 +481,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
     }
 
     private String safe(String s) { return s == null ? "" : s.replace('\n', ' '); }
-
     @Override public void onInterrupt() { log("service", "INTERRUPTED"); }
 
     @Override public void onDestroy() {
         destroyed = true;
         main.removeCallbacks(samsungWatcher);
-        if (overlay != null) {
-            try { overlay.stop(); } catch (Throwable ignored) {}
-            overlay = null;
-        }
+        if (overlay != null) { try { overlay.stop(); } catch (Throwable ignored) {} overlay = null; }
         try { unregisterReceiver(commandReceiver); } catch (Exception ignored) {}
         worker.shutdownNow();
         super.onDestroy();
