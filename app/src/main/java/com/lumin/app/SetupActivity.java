@@ -37,12 +37,20 @@ public class SetupActivity extends AppCompatActivity {
         scroll.addView(root);
 
         root.addView(text("SOFIA", 40, Color.WHITE, true));
-        root.addView(text("MyPoupar Intelligence · Build 58 Samsung Driver", 15, Color.rgb(161,173,218), false));
-        TextView intro = text("SOFIA controla a conversa e usa o Samsung Text Call apenas como driver privilegiado de voz/transcrição GSM.", 16, Color.rgb(220,226,245), false);
+        root.addView(text("MyPoupar Intelligence · Build 59 Voice Gateway", 15, Color.rgb(161,173,218), false));
+        TextView intro = text("O Fold passa a ser o cérebro de voz: STT → LLM → TTS sobre a rota de áudio ativa. Preparado para receber o áudio da chamada do S26 através de bridge HFP/USB.", 16, Color.rgb(220,226,245), false);
         intro.setPadding(0, dp(18), 0, dp(8));
         root.addView(intro);
 
-        root.addView(section("1 · SOFIA COMO TELEFONE"));
+        root.addView(section("1 · SOFIA VOICE GATEWAY"));
+        Button voiceGateway = button("Abrir SOFIA Voice Gateway");
+        voiceGateway.setOnClickListener(v -> startActivity(new Intent(this, SofiaVoiceGatewayActivity.class)));
+        root.addView(voiceGateway, buttonParams());
+        TextView gatewayNote = text("Teste já no Fold: microfone/entrada atual → STT pt-PT → Qwen local → TTS pt-PT → saída de áudio atual. Quando o bridge estiver ligado, trocamos apenas a rota física.", 13, Color.rgb(106,235,183), false);
+        gatewayNote.setPadding(0, dp(10), 0, 0);
+        root.addView(gatewayNote);
+
+        root.addView(section("2 · SOFIA COMO TELEFONE"));
         dialerState = text("A verificar app Telefone…", 16, Color.rgb(255,210,120), true);
         root.addView(dialerState);
         Button role = button("Definir SOFIA como app Telefone");
@@ -55,17 +63,14 @@ public class SetupActivity extends AppCompatActivity {
         nativeLab.setOnClickListener(v -> startActivity(new Intent(this, SofiaNativeCallActivity.class)));
         root.addView(nativeLab, buttonParams());
 
-        root.addView(section("2 · SAMSUNG DRIVER"));
+        root.addView(section("3 · SAMSUNG DRIVER (FALLBACK)"));
         bridge = text("A verificar…", 16, Color.rgb(106,235,183), true);
         root.addView(bridge);
         Button accessibility = button("Ativar / verificar Samsung Driver");
         accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         root.addView(accessibility, buttonParams());
-        TextView driverNote = text("Watcher contínuo 250 ms · estabilização 650 ms · fila de falas · filtro anti-repetição · bloqueio de prompt leak.", 13, Color.rgb(155,165,195), false);
-        driverNote.setPadding(0, dp(10), 0, 0);
-        root.addView(driverNote);
 
-        root.addView(section("3 · CÉREBRO IA LOCAL"));
+        root.addView(section("4 · CÉREBRO IA LOCAL"));
         modelState = text("A verificar modelo…", 15, Color.rgb(255,210,120), true);
         root.addView(modelState);
         ai = text("A testar IA…", 16, Color.rgb(255,210,120), true);
@@ -78,7 +83,7 @@ public class SetupActivity extends AppCompatActivity {
         testBrain.setOnClickListener(v -> testAi());
         root.addView(testBrain, buttonParams());
 
-        root.addView(section("4 · CHAMADA / DIAGNÓSTICO"));
+        root.addView(section("5 · CHAMADA / DIAGNÓSTICO"));
         Button console = button("Abrir consola SOFIA");
         console.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         root.addView(console, buttonParams());
@@ -86,7 +91,7 @@ public class SetupActivity extends AppCompatActivity {
         phone.setOnClickListener(v -> openSamsungPhone());
         root.addView(phone, buttonParams());
 
-        TextView note = text("Nesta build o PCM remoto continua delegado à Samsung. A SOFIA lê apenas transcrições estabilizadas, decide a resposta e devolve texto para o TTS da Samsung.", 14, Color.rgb(106,235,183), true);
+        TextView note = text("Build 59 não tenta furar o PCM GSM protegido. O objetivo é usar uma rota de áudio externa legítima (HFP/USB) e deixar o Fold tratar STT, IA e TTS.", 14, Color.rgb(106,235,183), true);
         note.setPadding(0, dp(22), 0, 0);
         root.addView(note);
         return scroll;
