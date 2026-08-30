@@ -72,7 +72,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         log("surface", "TEXT_CALL_READY");
 
         String customer = findCustomerCandidate(root, edit);
-        if (customer.isEmpty() || customer.equals(lastCustomer) || customer.equals(memory.getLastAssistant())) return;
+        if (customer.isEmpty() || customer.equals(memory.getLastAssistant())) return;
 
         lastCustomer = customer;
         log("last_customer", customer);
@@ -93,7 +93,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
             return;
         }
 
-        if (busy) return;
+        if (busy) {
+            log("path", "WAITING_AI");
+            return;
+        }
         busy = true;
         log("path", "QWEN");
         final String prompt = SofiaEngine.buildPrompt(customer, memory);
@@ -143,12 +146,17 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private String findCustomerCandidate(AccessibilityNodeInfo root, AccessibilityNodeInfo edit) {
         List<String> texts = new ArrayList<>();
         collectTexts(root, texts, edit);
+        String lastAssistant = memory.getLastAssistant();
         for (int i = texts.size() - 1; i >= 0; i--) {
             String s = texts.get(i).trim();
             if (s.length() < 2 || s.length() > 260) continue;
-            String l = s.toLowerCase();
+            String l = s.toLowerCase(java.util.Locale.ROOT);
             if (isSamsungChrome(l)) continue;
-            if (s.equals(memory.getLastAssistant())) continue;
+            if (s.equals(lastAssistant)) continue;
+            // Crucial: Samsung suggestion chips remain permanently in the tree.
+            // If the newest visible node is the same stale value as before, keep
+            // scanning instead of returning it and blocking the real new utterance.
+            if (s.equals(lastCustomer)) continue;
             return s;
         }
         return "";
@@ -160,8 +168,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 l.equals("escrever") || l.contains("chamada de texto") || l.equals("mais") ||
                 l.equals("repetir") || l.equals("reproduzir") || l.equals("parar") || l.equals("cancelar") ||
                 l.equals("enviar") || l.equals("responder") || l.equals("voltar") || l.equals("fechar") ||
-                l.contains("urgente") || l.contains("liga-lhe mais tarde") || l.contains("quem fala") ||
-                l.contains("mensagem sugerida") || l.contains("sugestão") || l.contains("assistente de chamada") ||
+                l.contains("urgente") || l.contains("liga-lhe mais tarde") || l.contains("ligar-lhe mais tarde") ||
+                l.contains("ligue-lhe mais tarde") || l.contains("quem fala") || l.contains("mensagem sugerida") ||
+                l.contains("sugestão") || l.contains("assistente de chamada") ||
                 l.matches("\\d{1,2}:\\d{2}") || l.matches("\\d{1,2}:\\d{2}:\\d{2}") ||
                 l.contains("minutos") || l.contains("segundos");
     }
