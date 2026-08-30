@@ -33,6 +33,18 @@ public final class SofiaAiHealth {
     }
 
     public static Result check(Context context) {
+        if (LocalQwenManager.isInstalled(context)) {
+            long start = System.currentTimeMillis();
+            try {
+                String health = LocalQwenManager.healthBlocking(context);
+                long ms = System.currentTimeMillis() - start;
+                float speed = LocalQwenManager.getLastTokensPerSecond();
+                return new Result(true, ms, "IA LOCAL · " + LocalQwenManager.MODEL_LABEL + " · " + String.format(java.util.Locale.US, "%.1f tok/s", speed));
+            } catch (Throwable ex) {
+                return new Result(false, System.currentTimeMillis() - start, "Modelo local: " + ex.getClass().getSimpleName() + ": " + (ex.getMessage() == null ? "erro" : ex.getMessage()));
+            }
+        }
+
         long start = System.currentTimeMillis();
         HttpURLConnection c = null;
         try {
@@ -54,9 +66,9 @@ public final class SofiaAiHealth {
             if (code < 200 || code >= 300) return new Result(false, ms, "HTTP " + code);
             JSONObject out = new JSONObject(sb.toString());
             boolean hasModel = out.optJSONArray("models") != null && out.optJSONArray("models").length() > 0;
-            return new Result(true, ms, hasModel ? "Servidor e modelo disponíveis" : "Servidor online; falta modelo");
+            return new Result(true, ms, hasModel ? "Endpoint remoto e modelo disponíveis" : "Endpoint remoto online; falta modelo");
         } catch (Exception ex) {
-            return new Result(false, System.currentTimeMillis() - start, ex.getClass().getSimpleName() + ": " + (ex.getMessage() == null ? "sem ligação" : ex.getMessage()));
+            return new Result(false, System.currentTimeMillis() - start, "Cérebro local não instalado · remoto: " + ex.getClass().getSimpleName());
         } finally {
             if (c != null) c.disconnect();
         }
