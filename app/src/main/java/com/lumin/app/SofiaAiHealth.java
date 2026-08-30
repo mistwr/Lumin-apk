@@ -36,9 +36,9 @@ public final class SofiaAiHealth {
         if (LocalQwenManager.isInstalled(context)) {
             long start = System.currentTimeMillis();
             try {
-                String health = LocalQwenManager.healthBlocking(context);
+                LocalQwenManager.healthBlocking(context);
                 long ms = System.currentTimeMillis() - start;
-                float speed = LocalQwenManager.getLastTokensPerSecond();
+                float speed = LocalQwenManager.INSTANCE.getLastTokensPerSecond();
                 return new Result(true, ms, "IA LOCAL · " + LocalQwenManager.MODEL_LABEL + " · " + String.format(java.util.Locale.US, "%.1f tok/s", speed));
             } catch (Throwable ex) {
                 return new Result(false, System.currentTimeMillis() - start, "Modelo local: " + ex.getClass().getSimpleName() + ": " + (ex.getMessage() == null ? "erro" : ex.getMessage()));
