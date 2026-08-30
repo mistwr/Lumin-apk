@@ -6,8 +6,8 @@ import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
-import android.view.View;
 import android.view.WindowManager;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -38,10 +38,7 @@ public class SofiaCallOverlay {
 
     public void stop() {
         main.removeCallbacks(refresh);
-        if (added && panel != null) {
-            try { wm.removeView(panel); } catch (Exception ignored) {}
-        }
-        added = false;
+        hide();
     }
 
     private void build() {
@@ -73,23 +70,47 @@ public class SofiaCallOverlay {
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
-            String surface = diag.getString("surface", "");
-            boolean textCallReady = "TEXT_CALL_READY".equals(surface);
-            if (textCallReady) show(); else hide();
+            // Do not trust a stale TEXT_CALL_READY flag. The overlay itself verifies
+            // that the active window is still Samsung InCallUI and still exposes
+            // the editable Text Call field. This makes it disappear immediately
+            // when Text Call or the call is closed.
+            boolean textCallActuallyOpen = isSamsungTextCallOpenNow();
+            if (textCallActuallyOpen) show(); else hide();
 
             if (added) {
                 String mode = control.getString("mode", "AUTO");
                 String label = "ASSISTED".equals(mode) ? "ASSISTIDO" : mode;
                 String qwen = diag.getString("qwen", "—");
-                status.setText("SOFIA · " + label + " · IA " + (qwen.startsWith("OK") ? "ONLINE" : "READY"));
+                String ai = qwen.startsWith("OK") ? "ONLINE" : (qwen.startsWith("ERRO") ? "OFFLINE" : "READY");
+                status.setText("SOFIA · " + label + " · IA " + ai);
                 String c = control.getString("live_customer", "");
                 customer.setText(c.isEmpty() ? "À espera do cliente…" : "Cliente: “" + c + "”");
                 String r = control.getString("suggested_reply", "");
                 reply.setText(r.isEmpty() ? "" : "Sofia: “" + r + "”");
             }
-            main.postDelayed(this, 350);
+            main.postDelayed(this, 250);
         }
     };
+
+    private boolean isSamsungTextCallOpenNow() {
+        try {
+            AccessibilityNodeInfo root = service.getRootInActiveWindow();
+            if (root == null || root.getPackageName() == null ||
+                    !"com.samsung.android.incallui".contentEquals(root.getPackageName())) return false;
+            return hasEditable(root);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean hasEditable(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        if (node.isEditable()) return true;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (hasEditable(node.getChild(i))) return true;
+        }
+        return false;
+    }
 
     private void setMode(String mode) {
         control.edit().putString("mode", mode).apply();
@@ -115,7 +136,7 @@ public class SofiaCallOverlay {
     }
 
     private void hide() {
-        if (!added) return;
+        if (!added || panel == null) return;
         try { wm.removeView(panel); } catch (Exception ignored) {}
         added = false;
     }
