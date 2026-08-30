@@ -1,12 +1,21 @@
 package com.lumin.app;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.graphics.Path;
+import android.graphics.Rect;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +23,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class SofiaAccessibilityService extends AccessibilityService {
+    public static final String ACTION_SEND_REPLY = "com.lumin.app.SEND_REPLY";
+    public static final String EXTRA_REPLY = "reply";
+
     private final SofiaMemory memory = new SofiaMemory();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -21,11 +33,26 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private String transcript = "";
     private volatile boolean busy = false;
     private SharedPreferences diag;
+    private SharedPreferences control;
     private long lastTextCallReadyAt = 0L;
+
+    private final BroadcastReceiver commandReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null || !ACTION_SEND_REPLY.equals(intent.getAction())) return;
+            String reply = intent.getStringExtra(EXTRA_REPLY);
+            if (reply == null || reply.trim().isEmpty()) return;
+            sendReply(reply.trim(), true);
+        }
+    };
 
     @Override public void onServiceConnected() {
         super.onServiceConnected();
         diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
+        control = getSharedPreferences("sofia_control", MODE_PRIVATE);
+        if (!control.contains("mode")) control.edit().putString("mode", "AUTO").apply();
+        IntentFilter filter = new IntentFilter(ACTION_SEND_REPLY);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(commandReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(commandReceiver, filter);
         log("service", "ATIVO");
     }
 
@@ -33,14 +60,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (event == null || event.getPackageName() == null) return;
         if (!"com.samsung.android.incallui".contentEquals(event.getPackageName())) return;
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) { log("last_error", "root=null"); return; }
+        AccessibilityNodeInfo root = findSamsungRoot();
+        if (root == null) { log("last_error", "samsung_root=null"); return; }
 
         AccessibilityNodeInfo edit = findEditable(root);
         if (edit == null) {
-            if (System.currentTimeMillis() - lastTextCallReadyAt > 2500L) {
-                log("surface", "Samsung aberto; à espera do campo Text Call");
-            }
+            if (System.currentTimeMillis() - lastTextCallReadyAt > 2500L) log("surface", "Samsung aberto; à espera do campo Text Call");
             return;
         }
         lastTextCallReadyAt = System.currentTimeMillis();
@@ -51,16 +76,20 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
         lastCustomer = customer;
         log("last_customer", customer);
-        transcript += "Cliente: " + customer + "\n";
+        appendTranscript("Cliente", customer);
         SofiaEngine.learnFreeText(customer, memory);
+
+        String mode = mode();
+        if ("MANUAL".equals(mode)) {
+            log("path", "MANUAL_CAPTURE");
+            control.edit().putString("suggested_reply", "").apply();
+            return;
+        }
 
         SofiaEngine.Decision d = SofiaEngine.fastDecision(customer, memory);
         if (d != null) {
             log("path", "FAST_PATH");
-            sendReply(d.reply);
-            memory.setLastAssistant(d.reply);
-            transcript += "Sofia: " + d.reply + "\n";
-            if (d.handoff) syncNow("interested", d.stage, true);
+            handleGeneratedReply(d.reply, d.handoff, d.stage, mode);
             return;
         }
 
@@ -72,22 +101,43 @@ public class SofiaAccessibilityService extends AccessibilityService {
             try {
                 String reply = QwenClient.generate(prompt);
                 if (reply == null || reply.trim().isEmpty()) reply = fallback();
-                final String finalReply = reply.trim();
                 log("qwen", "OK");
-                sendReply(finalReply);
-                memory.setLastAssistant(finalReply);
-                transcript += "Sofia: " + finalReply + "\n";
+                handleGeneratedReply(reply.trim(), false, "QUALIFICATION", mode);
             } catch (Exception e) {
                 log("qwen", "ERRO: " + e.getClass().getSimpleName() + " " + safe(e.getMessage()));
-                sendReply(fallback());
+                handleGeneratedReply(fallback(), false, "QUALIFICATION", mode);
             } finally {
                 busy = false;
             }
         });
     }
 
+    private void handleGeneratedReply(String reply, boolean handoff, String stage, String mode) {
+        memory.setLastAssistant(reply);
+        control.edit().putString("suggested_reply", reply).apply();
+        if ("ASSISTED".equals(mode)) {
+            log("send", "WAITING_USER_APPROVAL");
+            return;
+        }
+        appendTranscript("Sofia", reply);
+        sendReply(reply, false);
+        if (handoff) syncNow("interested", stage, true);
+    }
+
+    private String mode() {
+        if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
+        return control.getString("mode", "AUTO");
+    }
+
     private String fallback() {
         return "Certo. Diga-me só o que considera mais importante melhorar no serviço atual.";
+    }
+
+    private void appendTranscript(String who, String text) {
+        transcript += who + ": " + text + "\n";
+        if (transcript.length() > 12000) transcript = transcript.substring(transcript.length() - 12000);
+        if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
+        control.edit().putString("live_transcript", transcript).putString("live_customer", lastCustomer).apply();
     }
 
     private String findCustomerCandidate(AccessibilityNodeInfo root, AccessibilityNodeInfo edit) {
@@ -122,10 +172,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
         for (int i = 0; i < node.getChildCount(); i++) collectTexts(node.getChild(i), out, edit);
     }
 
-    private void sendReply(String reply) {
+    private void sendReply(String reply, boolean userApproved) {
         main.post(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) { log("last_error", "send: root=null"); return; }
+            AccessibilityNodeInfo root = findSamsungRoot();
+            if (root == null) { log("last_error", "send: Samsung Text Call não está acessível"); return; }
             AccessibilityNodeInfo edit = findEditable(root);
             if (edit == null) { log("last_error", "send: edit=null"); return; }
 
@@ -138,46 +188,88 @@ public class SofiaAccessibilityService extends AccessibilityService {
             boolean set = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
             log("last_reply", reply);
             log("set_text", String.valueOf(set));
-
-            main.postDelayed(() -> pressSend(reply), 180);
+            if (!set) { log("send", "SET_TEXT_FAILED"); return; }
+            if (userApproved) {
+                appendTranscript("Sofia", reply);
+                memory.setLastAssistant(reply);
+                control.edit().putString("suggested_reply", "").apply();
+            }
+            main.postDelayed(() -> pressSend(reply, 0), 180);
         });
     }
 
-    private void pressSend(String expectedReply) {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) { log("last_error", "pressSend: root=null"); return; }
+    private void pressSend(String expectedReply, int attempt) {
+        AccessibilityNodeInfo root = findSamsungRoot();
+        if (root == null) { log("last_error", "pressSend: samsung_root=null"); return; }
         AccessibilityNodeInfo edit = findEditable(root);
-
         AccessibilityNodeInfo send = findSendButton(root);
-        if (send != null) {
+
+        if (attempt == 0 && send != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
-            if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                log("send", "BUTTON_OK");
-                log("surface", "TEXT_CALL_READY");
+            if (clickable != null) clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            main.postDelayed(() -> verifySent(expectedReply, 1), 350);
+            return;
+        }
+
+        if (attempt <= 1 && edit != null && Build.VERSION.SDK_INT >= 30) {
+            edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+            main.postDelayed(() -> verifySent(expectedReply, 2), 300);
+            return;
+        }
+
+        if (send != null) {
+            Rect r = new Rect();
+            send.getBoundsInScreen(r);
+            if (!r.isEmpty()) {
+                Path path = new Path();
+                path.moveTo(r.centerX(), r.centerY());
+                GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 80);
+                boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
+                log("send", dispatched ? "GESTURE_DISPATCHED" : "GESTURE_FAILED");
+                main.postDelayed(() -> verifySent(expectedReply, 3), 400);
                 return;
             }
         }
+        log("send", "FAILED_NO_SEND_ACTION");
+    }
 
-        if (edit != null && android.os.Build.VERSION.SDK_INT >= 30) {
-            boolean ime = edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
-            if (ime) {
-                log("send", "IME_ENTER_OK");
-                log("surface", "TEXT_CALL_READY");
-                return;
+    private void verifySent(String expectedReply, int nextAttempt) {
+        AccessibilityNodeInfo root = findSamsungRoot();
+        AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
+        String current = edit == null || edit.getText() == null ? "" : edit.getText().toString().trim();
+        if (current.isEmpty() || !current.equals(expectedReply.trim())) {
+            log("send", "SEND_CONFIRMED");
+            log("surface", "TEXT_CALL_READY");
+            control.edit().putString("suggested_reply", "").apply();
+            return;
+        }
+        log("send", "NOT_SENT_ATTEMPT_" + nextAttempt);
+        if (nextAttempt <= 2) pressSend(expectedReply, nextAttempt);
+        else log("last_error", "A mensagem ficou no campo Samsung; abre o Telefone e tenta Enviar agora");
+    }
+
+    private AccessibilityNodeInfo findSamsungRoot() {
+        AccessibilityNodeInfo active = getRootInActiveWindow();
+        if (isSamsungRoot(active)) return active;
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows != null) {
+                for (AccessibilityWindowInfo window : windows) {
+                    AccessibilityNodeInfo root = window == null ? null : window.getRoot();
+                    if (isSamsungRoot(root)) return root;
+                }
             }
-        }
+        } catch (Exception ignored) {}
+        return null;
+    }
 
-        if (edit != null) {
-            boolean click = edit.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            log("send", "NO_SEND_BUTTON editClick=" + click + " text=" + expectedReply);
-        } else {
-            log("send", "FAILED_NO_EDIT");
-        }
+    private boolean isSamsungRoot(AccessibilityNodeInfo root) {
+        return root != null && root.getPackageName() != null && "com.samsung.android.incallui".contentEquals(root.getPackageName());
     }
 
     private AccessibilityNodeInfo clickableSelfOrParent(AccessibilityNodeInfo node) {
         AccessibilityNodeInfo cur = node;
-        for (int i = 0; i < 4 && cur != null; i++) {
+        for (int i = 0; i < 5 && cur != null; i++) {
             if (cur.isClickable()) return cur;
             cur = cur.getParent();
         }
@@ -241,4 +333,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private String safe(String s) { return s == null ? "" : s.replace('\n', ' '); }
 
     @Override public void onInterrupt() { log("service", "INTERRUPTED"); }
+
+    @Override public void onDestroy() {
+        try { unregisterReceiver(commandReceiver); } catch (Exception ignored) {}
+        worker.shutdownNow();
+        super.onDestroy();
+    }
 }
