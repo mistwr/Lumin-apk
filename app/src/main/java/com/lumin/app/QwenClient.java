@@ -1,6 +1,5 @@
 package com.lumin.app;
 
-import android.content.Context;
 import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -9,8 +8,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 public class QwenClient {
-    public static String generate(Context context, String prompt) throws Exception {
-        URL url = new URL(SofiaAiHealth.endpoint(context));
+    public static String generate(String prompt) throws Exception {
+        URL url = new URL(SofiaAiHealth.endpoint(SofiaApp.context()));
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         c.setConnectTimeout(1200);
         c.setReadTimeout(4500);
