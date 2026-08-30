@@ -1,13 +1,15 @@
 package com.lumin.app;
 
+import android.app.role.RoleManager;
 import android.content.Intent;
 import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.telecom.TelecomManager;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -15,117 +17,117 @@ import androidx.appcompat.app.AppCompatActivity;
 import java.util.concurrent.Executors;
 
 public class SetupActivity extends AppCompatActivity {
-    private TextView bridge;
-    private TextView ai;
-    private TextView modelState;
-    private TextView sync;
-    private EditText endpoint;
-    private Button installBrain;
-    private Button testBrain;
+    private TextView bridge, ai, modelState, dialerState;
+    private Button installBrain, testBrain;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(buildUi());
-        refreshBridge();
-        refreshModelState();
+        refreshAll();
         testAi();
     }
 
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(Color.rgb(7, 10, 22));
+        scroll.setBackgroundColor(Color.rgb(7,10,22));
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(22), dp(30), dp(22), dp(36));
         scroll.addView(root);
 
         root.addView(text("SOFIA", 40, Color.WHITE, true));
-        root.addView(text("MyPoupar Intelligence · Build 56.1 Local Brain", 15, Color.rgb(161,173,218), false));
-        TextView intro = text("Tudo numa página: ponte Samsung, cérebro IA local, atalho, chamada e SD Dialer.", 16, Color.rgb(220,226,245), false);
+        root.addView(text("MyPoupar Intelligence · Build 57 Native Dialer Lab", 15, Color.rgb(161,173,218), false));
+        TextView intro = text("Objetivo: substituir a experiência visual Samsung e testar se o Android permite à SOFIA aceder ao áudio remoto da chamada.", 16, Color.rgb(220,226,245), false);
         intro.setPadding(0, dp(18), 0, dp(8));
         root.addView(intro);
 
-        root.addView(section("1 · PONTE SAMSUNG"));
+        root.addView(section("1 · SOFIA COMO TELEFONE"));
+        dialerState = text("A verificar app Telefone…", 16, Color.rgb(255,210,120), true);
+        root.addView(dialerState);
+        Button role = button("Definir SOFIA como app Telefone");
+        role.setOnClickListener(v -> requestDialerRole());
+        root.addView(role, buttonParams());
+        Button dialer = button("Abrir SOFIA Phone");
+        dialer.setOnClickListener(v -> startActivity(new Intent(this, SofiaDialerActivity.class)));
+        root.addView(dialer, buttonParams());
+        Button nativeLab = button("Abrir teste de chamada / áudio nativo");
+        nativeLab.setOnClickListener(v -> startActivity(new Intent(this, SofiaNativeCallActivity.class)));
+        root.addView(nativeLab, buttonParams());
+
+        root.addView(section("2 · PONTE SAMSUNG · FALLBACK"));
         bridge = text("A verificar…", 16, Color.rgb(106,235,183), true);
         root.addView(bridge);
         Button accessibility = button("Ativar / verificar acessibilidade");
         accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         root.addView(accessibility, buttonParams());
 
-        root.addView(section("2 · CÉREBRO IA LOCAL"));
+        root.addView(section("3 · CÉREBRO IA LOCAL"));
         modelState = text("A verificar modelo…", 15, Color.rgb(255,210,120), true);
         root.addView(modelState);
         ai = text("A testar IA…", 16, Color.rgb(255,210,120), true);
         ai.setPadding(0, dp(8), 0, 0);
         root.addView(ai);
-
         installBrain = button("Instalar cérebro SOFIA (~491 MB)");
         installBrain.setOnClickListener(v -> installLocalBrain());
         root.addView(installBrain, buttonParams());
-
         testBrain = button("Testar IA local");
         testBrain.setOnClickListener(v -> testAi());
         root.addView(testBrain, buttonParams());
 
-        TextView localNote = text("O modelo Qwen2.5 0.5B Q4_K_M é descarregado uma única vez para o armazenamento privado da SOFIA e executado no próprio telemóvel através de llama.cpp. Depois deixa de ser necessário ter Ollama/127.0.0.1 ativo.", 13, Color.rgb(155,165,195), false);
-        localNote.setPadding(0, dp(10), 0, dp(8));
-        root.addView(localNote);
-
-        TextView fallback = section("ENDPOINT REMOTO · OPCIONAL");
-        root.addView(fallback);
-        endpoint = new EditText(this);
-        endpoint.setText(SofiaAiHealth.endpoint(this));
-        endpoint.setTextColor(Color.WHITE);
-        endpoint.setHintTextColor(Color.rgb(130,139,168));
-        endpoint.setHint("http://127.0.0.1:11434/api/generate");
-        endpoint.setSingleLine(true);
-        endpoint.setPadding(dp(12), dp(10), dp(12), dp(10));
-        root.addView(endpoint);
-
-        LinearLayout aiButtons = new LinearLayout(this);
-        aiButtons.setOrientation(LinearLayout.HORIZONTAL);
-        Button save = button("Guardar endpoint");
-        Button remoteTest = button("Testar fallback");
-        save.setOnClickListener(v -> {
-            SofiaAiHealth.saveEndpoint(this, endpoint.getText().toString());
-            testAi();
-        });
-        remoteTest.setOnClickListener(v -> testAi());
-        aiButtons.addView(save, weight());
-        aiButtons.addView(remoteTest, weight());
-        root.addView(aiButtons);
-
-        root.addView(section("3 · SD DIALER"));
-        boolean configured = !BuildConfig.SUPABASE_URL.isEmpty() && !BuildConfig.SUPABASE_ANON_KEY.isEmpty() && !BuildConfig.SUPABASE_ACCESS_TOKEN.isEmpty();
-        sync = text(configured ? "● SD Dialer configurado" : "○ SD Dialer a configurar", 16, configured ? Color.rgb(106,235,183) : Color.rgb(255,210,120), true);
-        root.addView(sync);
-
-        root.addView(section("4 · CHAMADA"));
+        root.addView(section("4 · CHAMADA ATUAL / FALLBACK"));
         Button console = button("Abrir consola SOFIA");
         console.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         root.addView(console, buttonParams());
         Button phone = button("Abrir Telefone Samsung");
-        phone.setOnClickListener(v -> openPhone());
+        phone.setOnClickListener(v -> openSamsungPhone());
         root.addView(phone, buttonParams());
 
-        TextView ready = text("Quando Ponte Samsung = ATIVA e IA LOCAL = ONLINE, a SOFIA está pronta para conversar em AUTO.", 14, Color.rgb(106,235,183), true);
-        ready.setPadding(0, dp(22), 0, 0);
-        root.addView(ready);
+        TextView note = text("Teste decisivo: durante uma chamada real, abre o Native Call Lab. Se mostrar REMOTE PCM = OK, avançamos para transcrição e voz 100% SOFIA. Se mostrar BLOQUEADO, usamos a nossa UI/dialer e Samsung apenas como driver de sistema.", 14, Color.rgb(106,235,183), true);
+        note.setPadding(0, dp(22), 0, 0);
+        root.addView(note);
         return scroll;
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        refreshBridge();
+    @Override protected void onResume() { super.onResume(); refreshAll(); }
+
+    private void refreshAll() {
+        if (bridge != null) {
+            boolean enabled = isAccessibilityEnabled();
+            bridge.setText(enabled ? "● Ponte Samsung ATIVA" : "○ Ponte Samsung DESLIGADA");
+            bridge.setTextColor(enabled ? Color.rgb(106,235,183) : Color.rgb(255,210,120));
+        }
+        if (dialerState != null) {
+            boolean held = isDefaultDialer();
+            dialerState.setText(held ? "● SOFIA É A APP TELEFONE" : "○ Samsung ainda é a app Telefone");
+            dialerState.setTextColor(held ? Color.rgb(106,235,183) : Color.rgb(255,210,120));
+        }
         refreshModelState();
     }
 
-    private void refreshBridge() {
-        if (bridge == null) return;
-        boolean enabled = isAccessibilityEnabled();
-        bridge.setText(enabled ? "● Ponte Samsung ATIVA" : "○ Ponte Samsung DESLIGADA");
-        bridge.setTextColor(enabled ? Color.rgb(106,235,183) : Color.rgb(255,210,120));
+    private boolean isDefaultDialer() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            RoleManager rm = (RoleManager)getSystemService(ROLE_SERVICE);
+            return rm != null && rm.isRoleHeld(RoleManager.ROLE_DIALER);
+        }
+        TelecomManager tm = (TelecomManager)getSystemService(TELECOM_SERVICE);
+        return tm != null && getPackageName().equals(tm.getDefaultDialerPackage());
+    }
+
+    private void requestDialerRole() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            RoleManager rm = (RoleManager)getSystemService(ROLE_SERVICE);
+            if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_DIALER) && !rm.isRoleHeld(RoleManager.ROLE_DIALER)) {
+                startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER), 570);
+                return;
+            }
+        }
+        TelecomManager tm = (TelecomManager)getSystemService(TELECOM_SERVICE);
+        if (tm != null) {
+            Intent i = new Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER);
+            i.putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, getPackageName());
+            startActivity(i);
+        }
     }
 
     private void refreshModelState() {
@@ -138,59 +140,35 @@ public class SetupActivity extends AppCompatActivity {
         } else {
             modelState.setText("○ Cérebro local ainda não instalado");
             modelState.setTextColor(Color.rgb(255,210,120));
-            if (installBrain != null) installBrain.setText("Instalar cérebro SOFIA (~491 MB)");
         }
     }
 
     private void installLocalBrain() {
-        installBrain.setEnabled(false);
-        testBrain.setEnabled(false);
+        installBrain.setEnabled(false); testBrain.setEnabled(false);
         ai.setText("◌ A descarregar cérebro local…");
-        ai.setTextColor(Color.rgb(255,210,120));
         LocalQwenManager.installAsync(this, new LocalQwenManager.DownloadCallback() {
             @Override public void onProgress(int percent, long downloadedMb, long totalMb) {
-                runOnUiThread(() -> {
-                    String p = percent >= 0 ? percent + "%" : downloadedMb + " MB";
-                    String total = totalMb > 0 ? " · " + downloadedMb + "/" + totalMb + " MB" : " · " + downloadedMb + " MB";
-                    ai.setText("↓ A instalar cérebro · " + p + total);
-                });
+                runOnUiThread(() -> ai.setText("↓ A instalar cérebro · " + (percent >= 0 ? percent + "%" : downloadedMb + " MB")));
             }
-
             @Override public void onComplete(String path) {
-                runOnUiThread(() -> {
-                    installBrain.setEnabled(true);
-                    testBrain.setEnabled(true);
-                    refreshModelState();
-                    ai.setText("✓ Modelo descarregado · a carregar IA…");
-                    testAi();
-                });
+                runOnUiThread(() -> { installBrain.setEnabled(true); testBrain.setEnabled(true); refreshModelState(); testAi(); });
             }
-
             @Override public void onError(String message) {
-                runOnUiThread(() -> {
-                    installBrain.setEnabled(true);
-                    testBrain.setEnabled(true);
-                    ai.setText("○ Falha ao instalar · " + message);
-                    ai.setTextColor(Color.rgb(255,125,125));
-                });
+                runOnUiThread(() -> { installBrain.setEnabled(true); testBrain.setEnabled(true); ai.setText("○ Falha · " + message); ai.setTextColor(Color.rgb(255,125,125)); });
             }
         });
     }
 
     private void testAi() {
         if (ai == null) return;
-        ai.setText("◌ A testar IA…");
-        ai.setTextColor(Color.rgb(255,210,120));
+        ai.setText("◌ A testar IA…"); ai.setTextColor(Color.rgb(255,210,120));
         Executors.newSingleThreadExecutor().submit(() -> {
             SofiaAiHealth.Result r = SofiaAiHealth.check(this);
-            runOnUiThread(() -> {
-                ai.setText(r.online ? "● IA ONLINE · " + r.latencyMs + " ms · " + r.message : "○ IA OFFLINE · " + r.message);
-                ai.setTextColor(r.online ? Color.rgb(106,235,183) : Color.rgb(255,125,125));
-            });
+            runOnUiThread(() -> { ai.setText(r.online ? "● IA ONLINE · " + r.latencyMs + " ms · " + r.message : "○ IA OFFLINE · " + r.message); ai.setTextColor(r.online ? Color.rgb(106,235,183) : Color.rgb(255,125,125)); });
         });
     }
 
-    private void openPhone() {
+    private void openSamsungPhone() {
         Intent i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.dialer");
         if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.incallui");
         if (i != null) startActivity(i);
@@ -203,35 +181,12 @@ public class SetupActivity extends AppCompatActivity {
 
     private TextView section(String s) {
         TextView v = text(s, 13, Color.rgb(140,151,190), true);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1,-2);
-        p.topMargin = dp(24);
-        p.bottomMargin = dp(8);
-        v.setLayoutParams(p);
-        return v;
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1,-2); p.topMargin = dp(24); p.bottomMargin = dp(8); v.setLayoutParams(p); return v;
     }
-
     private TextView text(String s, int sp, int color, boolean bold) {
-        TextView v = new TextView(this);
-        v.setText(s); v.setTextSize(sp); v.setTextColor(color); v.setLineSpacing(0,1.12f);
-        if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD);
-        return v;
+        TextView v = new TextView(this); v.setText(s); v.setTextSize(sp); v.setTextColor(color); v.setLineSpacing(0,1.12f); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v;
     }
-
-    private Button button(String label) {
-        Button b = new Button(this);
-        b.setText(label); b.setTextSize(15); b.setAllCaps(false); b.setGravity(Gravity.CENTER);
-        return b;
-    }
-
-    private LinearLayout.LayoutParams buttonParams() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(56)); p.topMargin = dp(10); return p;
-    }
-
-    private LinearLayout.LayoutParams weight() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1f);
-        p.setMargins(dp(2), dp(10), dp(2), 0);
-        return p;
-    }
-
+    private Button button(String label) { Button b = new Button(this); b.setText(label); b.setTextSize(15); b.setAllCaps(false); b.setGravity(Gravity.CENTER); return b; }
+    private LinearLayout.LayoutParams buttonParams() { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(56)); p.topMargin = dp(10); return p; }
     private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
 }
