@@ -83,7 +83,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             log("overlay", "ERRO: " + safe(t.getMessage()));
         }
 
-        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60.1");
+        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60.3");
         main.removeCallbacks(samsungWatcher);
         main.post(samsungWatcher);
     }
@@ -120,7 +120,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         }
 
         long now = System.currentTimeMillis();
-        if (!candidate.equals(observedCandidate)) {
+        if (!sameUtterance(candidate, observedCandidate)) {
             observedCandidate = candidate;
             observedCandidateSince = now;
             log("raw_candidate", candidate);
@@ -140,12 +140,16 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private synchronized void enqueueCustomer(String customer) {
         if (customer == null) return;
         customer = customer.trim();
-        if (customer.isEmpty() || sameUtterance(customer, lastCustomer) || sameUtterance(customer, memory.getLastAssistant())) return;
+        if (customer.isEmpty() || isCallState(customer) || sameUtterance(customer, lastCustomer) || sameUtterance(customer, memory.getLastAssistant())) return;
         for (String old : recentCustomers) if (sameUtterance(customer, old)) return;
         for (String q : customerQueue) if (sameUtterance(customer, q)) return;
+
+        // Samsung may emit corrected/intermediate variants while the LLM is busy.
+        // Keep only the newest pending customer turn so stale fragments cannot build a queue.
+        if (busy && !customerQueue.isEmpty()) customerQueue.clear();
         customerQueue.offer(customer);
         log("queue", String.valueOf(customerQueue.size()));
-        log("path", busy ? "QUEUED_WHILE_AI_BUSY" : "QUEUED_STABLE_UTTERANCE");
+        log("path", busy ? "LATEST_TURN_WHILE_AI_BUSY" : "QUEUED_STABLE_UTTERANCE");
         drainQueue();
     }
 
@@ -159,7 +163,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private void processCustomer(String customer) {
         customer = customer == null ? "" : customer.trim();
-        if (customer.isEmpty()) { drainQueue(); return; }
+        if (customer.isEmpty() || isCallState(customer)) { drainQueue(); return; }
         for (String old : recentCustomers) if (sameUtterance(customer, old)) { drainQueue(); return; }
 
         final long turnStarted = System.currentTimeMillis();
@@ -254,11 +258,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
         control.edit().putString("live_transcript", transcript).putString("live_customer", lastCustomer).apply();
     }
 
-    /**
-     * Samsung Text Call 60.1: choose the closest valid conversation bubble above
-     * the editable composer. This mirrors the real S26 layout instead of trusting
-     * traversal order, which previously picked system text and stale bubbles.
-     */
     private String findCustomerCandidate(AccessibilityNodeInfo root, AccessibilityNodeInfo edit) {
         List<NodeText> texts = new ArrayList<>();
         collectTexts(root, texts, edit);
@@ -271,7 +270,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             String s = nt.text == null ? "" : nt.text.trim();
             if (s.length() < 2 || s.length() > 220) continue;
             String l = s.toLowerCase(Locale.ROOT);
-            if (isSamsungChrome(l) || looksLikePhoneNumber(s)) continue;
+            if (isSamsungChrome(l) || isCallState(s) || looksLikePhoneNumber(s)) continue;
             if (sameUtterance(s, memory.getLastAssistant()) || sameUtterance(s, lastCustomer)) continue;
             boolean duplicate = false;
             for (String old : recentCustomers) if (sameUtterance(s, old)) { duplicate = true; break; }
@@ -280,9 +279,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (duplicate) continue;
 
             if (!editRect.isEmpty() && !nt.bounds.isEmpty()) {
-                // Must be clearly above the Samsung "Escrever resposta" composer.
                 if (nt.bounds.bottom >= editRect.top - 8) continue;
-                // Prefer the lowest valid bubble: it is the newest utterance on this UI.
                 if (nt.bounds.bottom > bestBottom) {
                     best = nt;
                     bestBottom = nt.bounds.bottom;
@@ -306,6 +303,14 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private String normalizeUtterance(String s) {
         return s.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+", " ").trim().replaceAll("\\s+", " ");
+    }
+
+    private boolean isCallState(String s) {
+        String l = normalizeUtterance(s);
+        return l.equals("a ligar") || l.equals("a chamar") || l.equals("a conectar") ||
+                l.equals("ligacao em curso") || l.equals("chamada em curso") || l.equals("a aguardar") ||
+                l.equals("calling") || l.equals("dialing") || l.equals("ringing") ||
+                l.startsWith("a ligar para ") || l.startsWith("a chamar ");
     }
 
     private boolean looksLikePhoneNumber(String s) {
