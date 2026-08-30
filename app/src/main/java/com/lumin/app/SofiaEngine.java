@@ -24,9 +24,27 @@ public class SofiaEngine {
         String t = customer.trim();
         String n = normalize(t);
 
-        if (n.contains("poupar") || n.contains("quero falar com") || n.contains("consultor") || n.contains("falar com uma pessoa")) {
+        // Handoff only when the intent is explicit. A normal question such as
+        // "como posso poupar na eletricidade?" must continue the conversation.
+        boolean explicitHandoff = n.equals("poupar") || n.equals("quero poupar") ||
+                n.contains("quero falar com um consultor") || n.contains("quero falar com consultor") ||
+                n.contains("quero falar com uma pessoa") || n.contains("passa me a um consultor") ||
+                n.contains("passe me a um consultor") || n.contains("falar com humano");
+        if (explicitHandoff) {
             memory.put("handoff", true);
             return new Decision("Perfeito. Vou deixar o pedido preparado para um consultor MyPoupar verificar consigo a melhor opção.", true, "HANDOFF", true);
+        }
+
+        // Very common call turns should be instant and not wait for the LLM.
+        if (n.equals("estas ai") || n.equals("esta ai") || n.equals("ola") || n.equals("alo")) {
+            return new Decision("Sim, estou consigo. Diga-me: quer analisar telecomunicações, eletricidade ou os dois?", true, "OPENING", false);
+        }
+        if ((n.contains("poupar") || n.contains("baixar")) && (n.contains("eletric") || n.contains("energia") || n.contains("luz"))) {
+            memory.put("energy_interest", true);
+            return new Decision("Claro. Para começar, sensivelmente quanto paga por mês de eletricidade?", true, "ENERGY_QUALIFICATION", false);
+        }
+        if ((n.contains("melhor opcao") || n.contains("mais barato") || n.contains("pagar menos")) && !memory.has("operator")) {
+            return new Decision("Consigo comparar consigo. Atualmente está com que operador?", true, "QUALIFICATION", false);
         }
 
         Matcher mm = MOBILE_LINES.matcher(t);
@@ -66,18 +84,16 @@ public class SofiaEngine {
         if (n.contains("satisfeito") || n.contains("estou bem") || n.contains("sem problemas")) memory.put("satisfaction", "satisfied");
         if (n.contains("caro") || n.contains("pago muito") || n.contains("baixar") || n.contains("preco")) memory.put("main_problem", "price");
         if (n.contains("internet lenta") || n.contains("wifi") || n.contains("falha")) memory.put("main_problem", "quality");
+        if (n.contains("eletric") || n.contains("energia") || n.contains("luz")) memory.put("energy_interest", true);
     }
 
     public static String buildPrompt(String customer, SofiaMemory memory) {
-        return "És a SOFIA, consultora MyPoupar. Fala em português de Portugal, como uma pessoa ao telefone. " +
-                "Responde normalmente numa frase curta e faz no máximo uma pergunta. Nunca repitas factos já conhecidos. " +
-                "Mantém a conversa e qualifica o cliente passo a passo. NÃO termines a conversa nem encaminhes para consultor apenas porque o cliente pergunta 'qual é a melhor opção', 'quanto fica' ou pede uma recomendação. " +
-                "Só deves fazer handoff para humano quando o cliente pedir explicitamente uma pessoa/consultor ou disser 'poupar'. Caso contrário continua a analisar e faz a próxima pergunta útil. " +
-                "Factos conhecidos: " + memory.summary() + ". " +
-                "Cliente disse: " + customer + ". " +
-                "A tua resposta anterior foi: " + memory.getLastAssistant() + ". " +
-                "Se faltar informação, faz apenas a próxima pergunta útil. Se houver objeção, responde com empatia e objetividade. " +
-                "Não inventes preços. Se o cliente pedir preço atual, diz que precisas dos dados necessários para comparar e continua a qualificação.";
+        return "És a SOFIA, consultora MyPoupar. Português de Portugal, tom natural de chamada. " +
+                "Responde numa frase curta, no máximo 18 palavras, e faz no máximo uma pergunta. Nunca repitas factos conhecidos. " +
+                "Continua a qualificação; não termines nem faças handoff só porque o cliente pergunta preços, poupança ou melhor opção. " +
+                "Handoff apenas se pedir explicitamente uma pessoa/consultor ou disser exatamente que quer avançar/poupar. " +
+                "Factos: " + memory.summary() + ". Cliente: " + customer + ". Resposta anterior: " + memory.getLastAssistant() + ". " +
+                "Se faltar informação, pergunta apenas o próximo dado útil. Não inventes preços.";
     }
 
     private static String detectOperator(String n) {
@@ -93,6 +109,7 @@ public class SofiaEngine {
         return s == null ? "" : s.toLowerCase(Locale.ROOT)
                 .replace('á','a').replace('à','a').replace('ã','a').replace('â','a')
                 .replace('é','e').replace('ê','e').replace('í','i').replace('ó','o')
-                .replace('ô','o').replace('õ','o').replace('ú','u').replace('ç','c');
+                .replace('ô','o').replace('õ','o').replace('ú','u').replace('ç','c')
+                .replace("?", "").replace("!", "").replace(".", "").trim();
     }
 }
