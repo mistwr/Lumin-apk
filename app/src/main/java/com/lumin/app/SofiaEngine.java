@@ -36,6 +36,13 @@ public class SofiaEngine {
         if (n.equals("estas ai") || n.equals("esta ai") || n.equals("ola") || n.equals("alo")) {
             return new Decision("Sim, estou consigo. Diga-me: quer analisar telecomunicações, eletricidade ou os dois?", true, "OPENING", false);
         }
+
+        if (n.contains("como podes ajudar") || n.contains("como pode ajudar") ||
+                n.contains("em que podes ajudar") || n.contains("em que pode ajudar") ||
+                n.contains("o que podes fazer") || n.contains("o que pode fazer")) {
+            return new Decision("Posso comparar os seus serviços e perceber onde consegue poupar. Começamos pelas telecomunicações?", true, "OPENING", false);
+        }
+
         if ((n.contains("poupar") || n.contains("baixar")) && (n.contains("eletric") || n.contains("energia") || n.contains("luz"))) {
             memory.put("energy_interest", true);
             return new Decision("Claro. Para começar, sensivelmente quanto paga por mês de eletricidade?", true, "ENERGY_QUALIFICATION", false);
