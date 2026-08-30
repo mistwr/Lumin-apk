@@ -3,7 +3,7 @@ package com.lumin.app;
 public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService {
     private SofiaCallOverlay overlay;
 
-    @Override protected void onServiceConnected() {
+    @Override public void onServiceConnected() {
         super.onServiceConnected();
         overlay = new SofiaCallOverlay(this);
         overlay.start();
