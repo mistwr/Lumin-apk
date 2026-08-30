@@ -29,8 +29,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
     public static final String ACTION_SEND_REPLY = "com.lumin.app.SEND_REPLY";
     public static final String EXTRA_REPLY = "reply";
 
-    private static final long POLL_MS = 250L;
-    private static final long STABLE_MS = 650L;
+    private static final long POLL_MS = 180L;
+    private static final long STABLE_MS = 480L;
 
     private final SofiaMemory memory = new SofiaMemory();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -47,6 +47,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private SharedPreferences diag;
     private SharedPreferences control;
     private long lastTextCallReadyAt = 0L;
+    private SofiaCallOverlay overlay;
 
     private final Runnable samsungWatcher = new Runnable() {
         @Override public void run() {
@@ -73,7 +74,16 @@ public class SofiaAccessibilityService extends AccessibilityService {
         IntentFilter filter = new IntentFilter(ACTION_SEND_REPLY);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(commandReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         else registerReceiver(commandReceiver, filter);
-        log("service", "ATIVO · SAMSUNG DRIVER 58");
+
+        try {
+            overlay = new SofiaCallOverlay(this);
+            overlay.start();
+            log("overlay", "ATIVO");
+        } catch (Throwable t) {
+            log("overlay", "ERRO: " + safe(t.getMessage()));
+        }
+
+        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60");
         main.removeCallbacks(samsungWatcher);
         main.post(samsungWatcher);
     }
@@ -114,12 +124,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
             observedCandidate = candidate;
             observedCandidateSince = now;
             log("raw_candidate", candidate);
-            log("stability", "0ms · WAITING");
+            log("stability", "0ms · a ouvir");
             return;
         }
 
         long stableFor = now - observedCandidateSince;
-        log("stability", stableFor + "ms" + (stableFor >= STABLE_MS ? " · FINAL" : " · WAITING"));
+        log("stability", stableFor + "ms" + (stableFor >= STABLE_MS ? " · final" : " · a ouvir"));
         if (stableFor < STABLE_MS) return;
 
         enqueueCustomer(candidate);
@@ -150,6 +160,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         customer = customer == null ? "" : customer.trim();
         if (customer.isEmpty() || recentCustomers.contains(customer)) { drainQueue(); return; }
 
+        final long turnStarted = System.currentTimeMillis();
         lastCustomer = customer;
         recentCustomers.add(customer);
         if (recentCustomers.size() > 30) recentCustomers.remove(0);
@@ -160,6 +171,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         String mode = mode();
         if ("MANUAL".equals(mode)) {
             log("path", "MANUAL_CAPTURE");
+            log("llm_ms", "0");
             control.edit().putString("suggested_reply", "").apply();
             drainQueue();
             return;
@@ -168,13 +180,14 @@ public class SofiaAccessibilityService extends AccessibilityService {
         SofiaEngine.Decision d = SofiaEngine.fastDecision(customer, memory);
         if (d != null) {
             log("path", "FAST_PATH");
+            log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
             handleGeneratedReply(d.reply, d.handoff, d.stage, mode);
             drainQueue();
             return;
         }
 
         busy = true;
-        log("path", "QWEN");
+        log("path", "QWEN_LOCAL");
         final String prompt = SofiaEngine.buildPrompt(customer, memory);
         worker.submit(() -> {
             try {
@@ -182,9 +195,11 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 reply = sanitizeReply(reply);
                 if (reply.isEmpty()) reply = fallback();
                 log("qwen", "OK");
+                log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
                 handleGeneratedReply(reply, false, "QUALIFICATION", mode);
             } catch (Exception e) {
                 log("qwen", "ERRO: " + e.getClass().getSimpleName() + " " + safe(e.getMessage()));
+                log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
                 handleGeneratedReply(fallback(), false, "QUALIFICATION", mode);
             } finally {
                 busy = false;
@@ -195,15 +210,17 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private String sanitizeReply(String reply) {
         if (reply == null) return "";
-        String r = reply.trim();
+        String r = reply.trim().replace('\n', ' ');
         String l = r.toLowerCase(Locale.ROOT);
         if (l.contains("és a sofia") || l.contains("es a sofia") || l.contains("system prompt") ||
                 l.contains("factos conhecidos") || l.contains("cliente disse:") || l.contains("responde numa frase") ||
-                l.contains("consultora mypoupar. português de portugal") || l.contains("consultora mypoupar. portugues de portugal")) {
+                l.contains("consultora mypoupar. português de portugal") || l.contains("consultora mypoupar. portugues de portugal") ||
+                l.contains("responde apenas") || l.contains("máximo 14 palavras") || l.contains("maximo 14 palavras")) {
             log("guardrail", "PROMPT_LEAK_BLOCKED");
             return fallback();
         }
-        if (r.length() > 320) r = r.substring(0, 320).trim();
+        if (r.startsWith("\"") && r.endsWith("\"") && r.length() > 1) r = r.substring(1, r.length() - 1).trim();
+        if (r.length() > 260) r = r.substring(0, 260).trim();
         return r;
     }
 
@@ -211,7 +228,11 @@ public class SofiaAccessibilityService extends AccessibilityService {
         reply = sanitizeReply(reply);
         if (reply.isEmpty()) reply = fallback();
         memory.setLastAssistant(reply);
-        control.edit().putString("suggested_reply", reply).apply();
+        control.edit()
+                .putString("suggested_reply", reply)
+                .putString("live_stage", stage == null ? "" : stage)
+                .putBoolean("live_handoff", handoff)
+                .apply();
         if ("ASSISTED".equals(mode)) {
             log("send", "WAITING_USER_APPROVAL");
             return;
@@ -227,7 +248,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     }
 
     private String fallback() {
-        return "Certo. Para eu perceber melhor, diga-me só o que gostaria de melhorar no serviço atual.";
+        return "Certo. Diga-me só o que gostaria de melhorar no serviço atual.";
     }
 
     private void appendTranscript(String who, String text) {
@@ -253,7 +274,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (s.equals(lastAssistant) || s.equals(lastCustomer) || recentCustomers.contains(s) || customerQueue.contains(s)) continue;
             if (looksLikePhoneNumber(s)) continue;
 
-            // Conversation bubbles normally sit above the composer. Ignore labels below/inside composer region.
             if (!editRect.isEmpty() && !nt.bounds.isEmpty() && nt.bounds.top >= editRect.top - 12) continue;
             log("candidate_bounds", nt.bounds.flattenToString());
             log("candidate_class", nt.className);
@@ -322,7 +342,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 memory.setLastAssistant(safeReply);
                 control.edit().putString("suggested_reply", "").apply();
             }
-            main.postDelayed(() -> pressSend(safeReply, 0), 100);
+            main.postDelayed(() -> pressSend(safeReply, 0), 90);
         });
     }
 
@@ -335,12 +355,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (attempt == 0 && send != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
             if (clickable != null) clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            main.postDelayed(() -> verifySent(expectedReply, 1), 220);
+            main.postDelayed(() -> verifySent(expectedReply, 1), 180);
             return;
         }
         if (attempt <= 1 && edit != null && Build.VERSION.SDK_INT >= 30) {
             edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
-            main.postDelayed(() -> verifySent(expectedReply, 2), 220);
+            main.postDelayed(() -> verifySent(expectedReply, 2), 180);
             return;
         }
         if (send != null) {
@@ -352,7 +372,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 50);
                 boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
                 log("send", dispatched ? "GESTURE_DISPATCHED" : "GESTURE_FAILED");
-                main.postDelayed(() -> verifySent(expectedReply, 3), 280);
+                main.postDelayed(() -> verifySent(expectedReply, 3), 220);
                 return;
             }
         }
@@ -462,6 +482,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
     @Override public void onDestroy() {
         destroyed = true;
         main.removeCallbacks(samsungWatcher);
+        if (overlay != null) {
+            try { overlay.stop(); } catch (Throwable ignored) {}
+            overlay = null;
+        }
         try { unregisterReceiver(commandReceiver); } catch (Exception ignored) {}
         worker.shutdownNow();
         super.onDestroy();
