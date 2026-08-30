@@ -17,13 +17,17 @@ import java.util.concurrent.Executors;
 public class SetupActivity extends AppCompatActivity {
     private TextView bridge;
     private TextView ai;
+    private TextView modelState;
     private TextView sync;
     private EditText endpoint;
+    private Button installBrain;
+    private Button testBrain;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(buildUi());
         refreshBridge();
+        refreshModelState();
         testAi();
     }
 
@@ -37,8 +41,8 @@ public class SetupActivity extends AppCompatActivity {
         scroll.addView(root);
 
         root.addView(text("SOFIA", 40, Color.WHITE, true));
-        root.addView(text("MyPoupar Intelligence · Build 56 Setup Center", 15, Color.rgb(161,173,218), false));
-        TextView intro = text("Tudo numa página: ponte Samsung, cérebro IA, atalho, chamada e SD Dialer.", 16, Color.rgb(220,226,245), false);
+        root.addView(text("MyPoupar Intelligence · Build 56.1 Local Brain", 15, Color.rgb(161,173,218), false));
+        TextView intro = text("Tudo numa página: ponte Samsung, cérebro IA local, atalho, chamada e SD Dialer.", 16, Color.rgb(220,226,245), false);
         intro.setPadding(0, dp(18), 0, dp(8));
         root.addView(intro);
 
@@ -49,9 +53,27 @@ public class SetupActivity extends AppCompatActivity {
         accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         root.addView(accessibility, buttonParams());
 
-        root.addView(section("2 · CÉREBRO IA"));
+        root.addView(section("2 · CÉREBRO IA LOCAL"));
+        modelState = text("A verificar modelo…", 15, Color.rgb(255,210,120), true);
+        root.addView(modelState);
         ai = text("A testar IA…", 16, Color.rgb(255,210,120), true);
+        ai.setPadding(0, dp(8), 0, 0);
         root.addView(ai);
+
+        installBrain = button("Instalar cérebro SOFIA (~491 MB)");
+        installBrain.setOnClickListener(v -> installLocalBrain());
+        root.addView(installBrain, buttonParams());
+
+        testBrain = button("Testar IA local");
+        testBrain.setOnClickListener(v -> testAi());
+        root.addView(testBrain, buttonParams());
+
+        TextView localNote = text("O modelo Qwen2.5 0.5B Q4_K_M é descarregado uma única vez para o armazenamento privado da SOFIA e executado no próprio telemóvel através de llama.cpp. Depois deixa de ser necessário ter Ollama/127.0.0.1 ativo.", 13, Color.rgb(155,165,195), false);
+        localNote.setPadding(0, dp(10), 0, dp(8));
+        root.addView(localNote);
+
+        TextView fallback = section("ENDPOINT REMOTO · OPCIONAL");
+        root.addView(fallback);
         endpoint = new EditText(this);
         endpoint.setText(SofiaAiHealth.endpoint(this));
         endpoint.setTextColor(Color.WHITE);
@@ -64,19 +86,15 @@ public class SetupActivity extends AppCompatActivity {
         LinearLayout aiButtons = new LinearLayout(this);
         aiButtons.setOrientation(LinearLayout.HORIZONTAL);
         Button save = button("Guardar endpoint");
-        Button test = button("Testar IA");
+        Button remoteTest = button("Testar fallback");
         save.setOnClickListener(v -> {
             SofiaAiHealth.saveEndpoint(this, endpoint.getText().toString());
             testAi();
         });
-        test.setOnClickListener(v -> testAi());
+        remoteTest.setOnClickListener(v -> testAi());
         aiButtons.addView(save, weight());
-        aiButtons.addView(test, weight());
+        aiButtons.addView(remoteTest, weight());
         root.addView(aiButtons);
-
-        TextView note = text("Nesta Build, a SOFIA já gere e testa o cérebro a partir daqui. O motor Qwen ainda precisa de estar instalado/ativo no telefone ou num endpoint compatível; a próxima fase integra o runtime GGUF dentro da própria app.", 13, Color.rgb(155,165,195), false);
-        note.setPadding(0, dp(10), 0, 0);
-        root.addView(note);
 
         root.addView(section("3 · SD DIALER"));
         boolean configured = !BuildConfig.SUPABASE_URL.isEmpty() && !BuildConfig.SUPABASE_ANON_KEY.isEmpty() && !BuildConfig.SUPABASE_ACCESS_TOKEN.isEmpty();
@@ -91,7 +109,7 @@ public class SetupActivity extends AppCompatActivity {
         phone.setOnClickListener(v -> openPhone());
         root.addView(phone, buttonParams());
 
-        TextView ready = text("Quando Ponte Samsung = ATIVA e IA = ONLINE, a SOFIA está pronta para conversar em AUTO.", 14, Color.rgb(106,235,183), true);
+        TextView ready = text("Quando Ponte Samsung = ATIVA e IA LOCAL = ONLINE, a SOFIA está pronta para conversar em AUTO.", 14, Color.rgb(106,235,183), true);
         ready.setPadding(0, dp(22), 0, 0);
         root.addView(ready);
         return scroll;
@@ -100,6 +118,7 @@ public class SetupActivity extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         refreshBridge();
+        refreshModelState();
     }
 
     private void refreshBridge() {
@@ -109,9 +128,59 @@ public class SetupActivity extends AppCompatActivity {
         bridge.setTextColor(enabled ? Color.rgb(106,235,183) : Color.rgb(255,210,120));
     }
 
+    private void refreshModelState() {
+        if (modelState == null) return;
+        boolean installed = LocalQwenManager.isInstalled(this);
+        if (installed) {
+            modelState.setText("● Cérebro instalado · " + LocalQwenManager.MODEL_LABEL + " · " + LocalQwenManager.installedSizeMb(this) + " MB");
+            modelState.setTextColor(Color.rgb(106,235,183));
+            if (installBrain != null) installBrain.setText("Reinstalar cérebro local");
+        } else {
+            modelState.setText("○ Cérebro local ainda não instalado");
+            modelState.setTextColor(Color.rgb(255,210,120));
+            if (installBrain != null) installBrain.setText("Instalar cérebro SOFIA (~491 MB)");
+        }
+    }
+
+    private void installLocalBrain() {
+        installBrain.setEnabled(false);
+        testBrain.setEnabled(false);
+        ai.setText("◌ A descarregar cérebro local…");
+        ai.setTextColor(Color.rgb(255,210,120));
+        LocalQwenManager.installAsync(this, new LocalQwenManager.DownloadCallback() {
+            @Override public void onProgress(int percent, long downloadedMb, long totalMb) {
+                runOnUiThread(() -> {
+                    String p = percent >= 0 ? percent + "%" : downloadedMb + " MB";
+                    String total = totalMb > 0 ? " · " + downloadedMb + "/" + totalMb + " MB" : " · " + downloadedMb + " MB";
+                    ai.setText("↓ A instalar cérebro · " + p + total);
+                });
+            }
+
+            @Override public void onComplete(String path) {
+                runOnUiThread(() -> {
+                    installBrain.setEnabled(true);
+                    testBrain.setEnabled(true);
+                    refreshModelState();
+                    ai.setText("✓ Modelo descarregado · a carregar IA…");
+                    testAi();
+                });
+            }
+
+            @Override public void onError(String message) {
+                runOnUiThread(() -> {
+                    installBrain.setEnabled(true);
+                    testBrain.setEnabled(true);
+                    ai.setText("○ Falha ao instalar · " + message);
+                    ai.setTextColor(Color.rgb(255,125,125));
+                });
+            }
+        });
+    }
+
     private void testAi() {
         if (ai == null) return;
         ai.setText("◌ A testar IA…");
+        ai.setTextColor(Color.rgb(255,210,120));
         Executors.newSingleThreadExecutor().submit(() -> {
             SofiaAiHealth.Result r = SofiaAiHealth.check(this);
             runOnUiThread(() -> {
