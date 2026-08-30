@@ -37,8 +37,8 @@ public class SetupActivity extends AppCompatActivity {
         scroll.addView(root);
 
         root.addView(text("SOFIA", 40, Color.WHITE, true));
-        root.addView(text("MyPoupar Intelligence · Build 57 Native Dialer Lab", 15, Color.rgb(161,173,218), false));
-        TextView intro = text("Objetivo: substituir a experiência visual Samsung e testar se o Android permite à SOFIA aceder ao áudio remoto da chamada.", 16, Color.rgb(220,226,245), false);
+        root.addView(text("MyPoupar Intelligence · Build 58 Samsung Driver", 15, Color.rgb(161,173,218), false));
+        TextView intro = text("SOFIA controla a conversa e usa o Samsung Text Call apenas como driver privilegiado de voz/transcrição GSM.", 16, Color.rgb(220,226,245), false);
         intro.setPadding(0, dp(18), 0, dp(8));
         root.addView(intro);
 
@@ -55,12 +55,15 @@ public class SetupActivity extends AppCompatActivity {
         nativeLab.setOnClickListener(v -> startActivity(new Intent(this, SofiaNativeCallActivity.class)));
         root.addView(nativeLab, buttonParams());
 
-        root.addView(section("2 · PONTE SAMSUNG · FALLBACK"));
+        root.addView(section("2 · SAMSUNG DRIVER"));
         bridge = text("A verificar…", 16, Color.rgb(106,235,183), true);
         root.addView(bridge);
-        Button accessibility = button("Ativar / verificar acessibilidade");
+        Button accessibility = button("Ativar / verificar Samsung Driver");
         accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         root.addView(accessibility, buttonParams());
+        TextView driverNote = text("Watcher contínuo 250 ms · estabilização 650 ms · fila de falas · filtro anti-repetição · bloqueio de prompt leak.", 13, Color.rgb(155,165,195), false);
+        driverNote.setPadding(0, dp(10), 0, 0);
+        root.addView(driverNote);
 
         root.addView(section("3 · CÉREBRO IA LOCAL"));
         modelState = text("A verificar modelo…", 15, Color.rgb(255,210,120), true);
@@ -75,15 +78,15 @@ public class SetupActivity extends AppCompatActivity {
         testBrain.setOnClickListener(v -> testAi());
         root.addView(testBrain, buttonParams());
 
-        root.addView(section("4 · CHAMADA ATUAL / FALLBACK"));
+        root.addView(section("4 · CHAMADA / DIAGNÓSTICO"));
         Button console = button("Abrir consola SOFIA");
         console.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         root.addView(console, buttonParams());
-        Button phone = button("Abrir Telefone Samsung");
+        Button phone = button("Abrir Telefone Samsung / Text Call");
         phone.setOnClickListener(v -> openSamsungPhone());
         root.addView(phone, buttonParams());
 
-        TextView note = text("Teste decisivo: durante uma chamada real, abre o Native Call Lab. Se mostrar REMOTE PCM = OK, avançamos para transcrição e voz 100% SOFIA. Se mostrar BLOQUEADO, usamos a nossa UI/dialer e Samsung apenas como driver de sistema.", 14, Color.rgb(106,235,183), true);
+        TextView note = text("Nesta build o PCM remoto continua delegado à Samsung. A SOFIA lê apenas transcrições estabilizadas, decide a resposta e devolve texto para o TTS da Samsung.", 14, Color.rgb(106,235,183), true);
         note.setPadding(0, dp(22), 0, 0);
         root.addView(note);
         return scroll;
@@ -94,7 +97,7 @@ public class SetupActivity extends AppCompatActivity {
     private void refreshAll() {
         if (bridge != null) {
             boolean enabled = isAccessibilityEnabled();
-            bridge.setText(enabled ? "● Ponte Samsung ATIVA" : "○ Ponte Samsung DESLIGADA");
+            bridge.setText(enabled ? "● Samsung Driver ATIVO" : "○ Samsung Driver DESLIGADO");
             bridge.setTextColor(enabled ? Color.rgb(106,235,183) : Color.rgb(255,210,120));
         }
         if (dialerState != null) {
@@ -118,7 +121,7 @@ public class SetupActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             RoleManager rm = (RoleManager)getSystemService(ROLE_SERVICE);
             if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_DIALER) && !rm.isRoleHeld(RoleManager.ROLE_DIALER)) {
-                startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER), 570);
+                startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER), 580);
                 return;
             }
         }
