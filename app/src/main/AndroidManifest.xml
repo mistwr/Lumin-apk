@@ -32,6 +32,11 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".SofiaVoiceGatewayActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".SofiaDialerActivity"
             android:exported="true"
             android:screenOrientation="portrait">
