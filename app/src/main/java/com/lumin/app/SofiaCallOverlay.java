@@ -41,6 +41,12 @@ public class SofiaCallOverlay {
         hide();
     }
 
+    public void onShortcutChanged(boolean enabled) {
+        diag.edit().putString("shortcut", enabled ? "SOFIA_VISIBLE" : "SOFIA_HIDDEN").apply();
+        if (!enabled) hide();
+        else if (isSamsungTextCallOpenNow()) show();
+    }
+
     private void build() {
         panel = new LinearLayout(service);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -70,12 +76,9 @@ public class SofiaCallOverlay {
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
-            // Do not trust a stale TEXT_CALL_READY flag. The overlay itself verifies
-            // that the active window is still Samsung InCallUI and still exposes
-            // the editable Text Call field. This makes it disappear immediately
-            // when Text Call or the call is closed.
+            boolean shortcutEnabled = SofiaShortcutController.isEnabled(control);
             boolean textCallActuallyOpen = isSamsungTextCallOpenNow();
-            if (textCallActuallyOpen) show(); else hide();
+            if (shortcutEnabled && textCallActuallyOpen) show(); else hide();
 
             if (added) {
                 String mode = control.getString("mode", "AUTO");
