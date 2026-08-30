@@ -8,10 +8,15 @@ android {
 
     defaultConfig {
         applicationId "com.lumin.app"
-        minSdk 21
+        minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 53
+        versionName "5.3"
+
+        buildConfigField "String", "SUPABASE_URL", '"' + (project.findProperty("SOFIA_SUPABASE_URL") ?: "") + '"'
+        buildConfigField "String", "SUPABASE_ANON_KEY", '"' + (project.findProperty("SOFIA_SUPABASE_ANON_KEY") ?: "") + '"'
+        buildConfigField "String", "SUPABASE_ACCESS_TOKEN", '"' + (project.findProperty("SOFIA_SUPABASE_ACCESS_TOKEN") ?: "") + '"'
+        buildConfigField "String", "QWEN_ENDPOINT", '"' + (project.findProperty("SOFIA_QWEN_ENDPOINT") ?: "http://127.0.0.1:11434/api/generate") + '"'
     }
 
     buildTypes {
@@ -22,10 +27,11 @@ android {
     }
 
     buildFeatures {
-        viewBinding false
+        buildConfig true
     }
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
 }
