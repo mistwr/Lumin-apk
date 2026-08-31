@@ -26,6 +26,11 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".AgentBuilderActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".UsersAdminActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".RecordsActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".ProductSettingsActivity" android:exported="false" android:screenOrientation="portrait" />
+
         <activity
             android:name=".SofiaAiCallingActivity"
             android:exported="false"
@@ -46,7 +51,6 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
-        <!-- Legacy labs remain internal only. They must never become the system dialer. -->
         <activity
             android:name=".SofiaDialerActivity"
             android:exported="false"
@@ -58,8 +62,6 @@
             android:launchMode="singleTop"
             android:excludeFromRecents="true"
             android:screenOrientation="portrait" />
-
-        <!-- No custom InCallService: Samsung Phone owns the live call UI so Text Call is available. -->
 
         <service
             android:name=".SofiaOverlayAccessibilityService"
