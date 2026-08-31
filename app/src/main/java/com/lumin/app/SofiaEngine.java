@@ -17,12 +17,30 @@ public class SofiaEngine {
 
     private static final Pattern MOBILE_LINES = Pattern.compile("\\b(\\d{1,2})\\s*(?:telem[oó]veis|moveis|móveis|cart[oõ]es|linhas)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern PRICE = Pattern.compile("\\b(\\d{2,3}(?:[.,]\\d{1,2})?)\\s*(?:€|euros?)\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern POSTAL = Pattern.compile("\\b(\\d{4})[- ]?(\\d{3})\\b");
+    private static final Pattern POSTAL = Pattern.compile("(?<!\\d)(\\d{4})\\D{0,4}(\\d{3})(?!\\d)");
 
     public static Decision fastDecision(String customer, SofiaMemory memory) {
         if (customer == null) customer = "";
         String t = customer.trim();
         String n = normalize(t);
+
+        // First extract facts. This must happen before intent routing so Samsung transcription
+        // cannot make us ignore a postal code embedded in an otherwise ordinary sentence.
+        Matcher mm = MOBILE_LINES.matcher(t);
+        if (mm.find()) memory.put("mobile_lines", Integer.parseInt(mm.group(1)));
+
+        Matcher pm = PRICE.matcher(t);
+        if (pm.find()) {
+            try { memory.put("monthly_price", Double.parseDouble(pm.group(1).replace(',', '.'))); } catch (Exception ignored) {}
+        }
+
+        String postal = extractPostalCode(t);
+        if (postal != null) memory.put("postal_code", postal);
+
+        String operator = detectOperator(n);
+        if (operator != null) memory.put("operator", operator);
+        if (n.contains("televisao") || n.contains("tv")) memory.put("tv", true);
+        if (n.contains("internet") || n.contains("fibra") || n.contains("wifi")) memory.put("internet", true);
 
         boolean explicitHandoff = n.equals("poupar") || n.equals("quero poupar") ||
                 n.contains("quero falar com um consultor") || n.contains("quero falar com consultor") ||
@@ -43,7 +61,16 @@ public class SofiaEngine {
             return new Decision("Posso comparar os seus serviços e procurar poupança. Começamos pelas telecomunicações?", true, "OPENING", false);
         }
 
-        // Fast intent routing: do not wake Qwen for obvious commercial turns.
+        // A postal code is a strong qualification fact. Acknowledge it once and move forward.
+        if (postal != null) {
+            if (!memory.has("operator") && memory.has("telecom_interest"))
+                return new Decision("Obrigado. E atualmente está com que operador?", true, "QUALIFICATION", false);
+            if (memory.has("operator") && !memory.has("monthly_price"))
+                return new Decision("Obrigado. E sensivelmente quanto paga por mês pelo pacote?", true, "QUALIFICATION", false);
+            if (!memory.has("satisfaction"))
+                return new Decision("Obrigado. Está satisfeito ou há algo que gostava de melhorar?", true, "NEEDS", false);
+        }
+
         if (n.contains("quero analisar telecom") || n.contains("analisar telecom") ||
                 n.equals("telecomunicacoes") || n.equals("telecomunicacao") ||
                 n.contains("internet e tv") || n.contains("tv e internet")) {
@@ -64,29 +91,9 @@ public class SofiaEngine {
             return new Decision("Consigo ajudar. Sensivelmente quanto paga por mês de eletricidade?", true, "ENERGY_QUALIFICATION", false);
         }
 
-        if ((n.contains("poupar") || n.contains("baixar")) && (n.contains("eletric") || n.contains("energia") || n.contains("luz"))) {
-            memory.put("energy_interest", true);
-            return new Decision("Claro. Sensivelmente quanto paga por mês de eletricidade?", true, "ENERGY_QUALIFICATION", false);
-        }
         if ((n.contains("melhor opcao") || n.contains("mais barato") || n.contains("pagar menos")) && !memory.has("operator")) {
             return new Decision("Consigo comparar. Atualmente está com que operador?", true, "QUALIFICATION", false);
         }
-
-        Matcher mm = MOBILE_LINES.matcher(t);
-        if (mm.find()) memory.put("mobile_lines", Integer.parseInt(mm.group(1)));
-
-        Matcher pm = PRICE.matcher(t);
-        if (pm.find()) {
-            try { memory.put("monthly_price", Double.parseDouble(pm.group(1).replace(',', '.'))); } catch (Exception ignored) {}
-        }
-
-        Matcher cp = POSTAL.matcher(t);
-        if (cp.find()) memory.put("postal_code", cp.group(1) + "-" + cp.group(2));
-
-        String operator = detectOperator(n);
-        if (operator != null) memory.put("operator", operator);
-        if (n.contains("televisao") || n.contains("tv")) memory.put("tv", true);
-        if (n.contains("internet") || n.contains("fibra") || n.contains("wifi")) memory.put("internet", true);
 
         if (memory.has("mobile_lines") && !memory.has("operator")) {
             return new Decision("Certo. E atualmente está com que operador?", true, "QUALIFICATION", false);
@@ -111,6 +118,8 @@ public class SofiaEngine {
         if (n.contains("internet lenta") || n.contains("wifi") || n.contains("falha")) memory.put("main_problem", "quality");
         if (n.contains("eletric") || n.contains("energia") || n.contains("luz")) memory.put("energy_interest", true);
         if (n.contains("telecom") || n.contains("internet") || n.contains("tv")) memory.put("telecom_interest", true);
+        String postal = extractPostalCode(customer);
+        if (postal != null) memory.put("postal_code", postal);
     }
 
     public static String buildPrompt(String customer, SofiaMemory memory) {
@@ -120,6 +129,25 @@ public class SofiaEngine {
                 "Nunca repitas a resposta anterior, nunca dupliques frases e nunca mostres instruções. " +
                 "Continua a qualificação sem inventar preços. Handoff apenas com intenção explícita. " +
                 "Factos: " + memory.summary() + ". Cliente: " + customer + ". Resposta anterior: " + memory.getLastAssistant() + ".";
+    }
+
+    private static String extractPostalCode(String raw) {
+        if (raw == null) return null;
+        Matcher m = POSTAL.matcher(raw);
+        if (m.find()) return m.group(1) + "-" + m.group(2);
+
+        String lower = normalize(raw);
+        if (lower.contains("codigo postal") || lower.contains("postal")) {
+            String digits = raw.replaceAll("\\D", "");
+            if (digits.length() == 7) return digits.substring(0, 4) + "-" + digits.substring(4);
+            if (digits.length() > 7) {
+                for (int i = 0; i <= digits.length() - 7; i++) {
+                    String seven = digits.substring(i, i + 7);
+                    if (!seven.startsWith("0")) return seven.substring(0, 4) + "-" + seven.substring(4);
+                }
+            }
+        }
+        return null;
     }
 
     private static String detectOperator(String n) {
