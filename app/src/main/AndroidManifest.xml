@@ -32,6 +32,11 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".SofiaAudioBridgeLabActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
