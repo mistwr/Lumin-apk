@@ -12,7 +12,6 @@ import java.net.URLEncoder;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
-import kotlin.concurrent.ThreadsKt;
 
 /** Live commercial brain shared with SD Dialer / Indigo. */
 public final class SdDialerBrainClient {
@@ -91,7 +90,6 @@ public final class SdDialerBrainClient {
         return s.length() > 5200 ? s.substring(0, 5200) : s;
     }
 
-    /** Returns a live SD Dialer objection reply when customer wording is a strong match. */
     public static String matchObjection(Context context, String customer) {
         String n = normalize(customer);
         if (n.length() < 4) return null;
@@ -113,7 +111,7 @@ public final class SdDialerBrainClient {
     private static int overlap(Set<String> a, Set<String> b) { int s=0; for(String x:a) if(b.contains(x)) s++; return s; }
     private static Set<String> tokens(String s) {
         Set<String> set = new HashSet<>();
-        String[] stop = {"eu","o","a","os","as","de","do","da","e","um","uma","para","com","que","nao","não","me","lhe","agora"};
+        String[] stop = {"eu","o","a","os","as","de","do","da","e","um","uma","para","com","que","nao","me","lhe","agora"};
         Set<String> stops = new HashSet<>(); for(String x:stop) stops.add(normalize(x));
         for(String x:s.split("\\s+")) if(x.length()>=3 && !stops.contains(x)) set.add(x);
         return set;
