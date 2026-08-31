@@ -52,13 +52,33 @@ public class SofiaEngine {
             return new Decision("Perfeito. Vou deixar o pedido preparado para um consultor MyPoupar.", true, "FECHAR", true);
         }
 
+        // Conversa básica deve ser instantânea e nunca cair no LLM/fallback.
+        if (isGreeting(n)) {
+            if (memory.has("conversation_started")) {
+                return resumePending(memory);
+            }
+            memory.put("conversation_started", true);
+            memory.put("aedcrafam_stage", "ABORDAR");
+            return new Decision("Boa tarde! Sou a Sofia da MyPoupar. Posso fazer-lhe duas perguntas rápidas para perceber se consegue poupar?", true, "ABORDAR", false);
+        }
+
+        if (isAffirmative(n) && memory.has("conversation_started") && !memory.has("operator") && !memory.has("energy_interest")) {
+            memory.put("telecom_interest", true);
+            memory.put("aedcrafam_stage", "ESCUTAR");
+            return new Decision("Obrigado. Para começar, atualmente está com que operador de telecomunicações?", true, "ESCUTAR", false);
+        }
+
+        if (isNegative(n) && memory.has("conversation_started")) {
+            return new Decision("Sem problema. Se preferir, diga-me apenas se quer analisar telecomunicações ou energia.", true, "ABORDAR", false);
+        }
+
         String objectionReply = SdDialerBrainClient.matchObjection(SofiaApp.context(), t);
         if (objectionReply != null && !objectionReply.trim().isEmpty()) {
             memory.put("last_objection", t);
             return new Decision(objectionReply, true, stage(memory), false);
         }
 
-        if (n.equals("estas ai") || n.equals("esta ai") || n.equals("ola") || n.equals("alo")) {
+        if (n.equals("estas ai") || n.equals("esta ai")) {
             return resumePending(memory);
         }
 
@@ -66,7 +86,7 @@ public class SofiaEngine {
                 n.contains("em que podes ajudar") || n.contains("em que pode ajudar") ||
                 n.contains("o que podes fazer") || n.contains("o que pode fazer")) {
             memory.put("aedcrafam_stage", "ABORDAR");
-            return new Decision("Posso comparar o que tem hoje e perceber se existe algo realmente melhor.", true, "ABORDAR", false);
+            return new Decision("Posso perceber o que tem hoje, comparar opções reais e dizer-lhe se há alguma vantagem em mudar.", true, "ABORDAR", false);
         }
 
         if (n.contains("quero analisar telecom") || n.contains("analisar telecom") ||
@@ -86,16 +106,14 @@ public class SofiaEngine {
             return new Decision("Claro. Sensivelmente quanto paga por mês de eletricidade?", true, "DESCOBRIR", false);
         }
 
-        // AEDCRAFAM: ESCUTAR. If the client says they are satisfied, discover what must be preserved.
         if (memory.has("satisfaction") && "satisfied".equals(String.valueOf(memory.get("satisfaction"))) && !memory.has("main_value")) {
             memory.put("aedcrafam_stage", "ESCUTAR");
-            return new Decision("Ainda bem. O que mais valoriza no serviço que tem hoje?", true, "ESCUTAR", false);
+            return new Decision("Ótimo, então não faz sentido mudar só por mudar. O que mais valoriza no serviço que tem hoje?", true, "ESCUTAR", false);
         }
 
-        // AEDCRAFAM: DESCOBRIR. We know the operator/value but still need the pain/opportunity.
         if (memory.has("operator") && memory.has("main_value") && !memory.has("main_problem")) {
             memory.put("aedcrafam_stage", "DESCOBRIR");
-            return new Decision("E há alguma coisa que gostava de melhorar no serviço atual?", true, "DESCOBRIR", false);
+            return new Decision("Percebi. E há alguma coisa que gostava de melhorar no serviço atual?", true, "DESCOBRIR", false);
         }
 
         if ((n.contains("melhorar") || n.contains("baixar") || n.contains("reduzir") || n.contains("poupar") || n.contains("preco")) &&
@@ -109,7 +127,7 @@ public class SofiaEngine {
 
         if ((n.contains("melhor opcao") || n.contains("mais barato") || n.contains("pagar menos")) && !memory.has("operator") && !memory.has("energy_interest")) {
             memory.put("aedcrafam_stage", "DESCOBRIR");
-            return new Decision("Consigo comparar. Atualmente está com que operador?", true, "DESCOBRIR", false);
+            return new Decision("Consigo comparar, sim. Atualmente está com que operador?", true, "DESCOBRIR", false);
         }
 
         if (memory.has("mobile_lines") && !memory.has("operator")) {
@@ -134,7 +152,7 @@ public class SofiaEngine {
 
         if (readyToCompare(memory)) {
             memory.put("aedcrafam_stage", "COMPARAR");
-            return null; // Qwen receives verified campaigns/energy data and performs the comparison.
+            return null;
         }
 
         return null;
@@ -192,10 +210,11 @@ public class SofiaEngine {
                 "ASSUMIR: quando houver intenção, conduzir naturalmente para o próximo passo sem pressionar. " +
                 "FECHAR: pedir apenas os dados/ação necessários depois de preço, serviços, fidelização e condições estarem claros. " +
                 "ACOMPANHAR: confirmar instalação/portabilidade/documentação quando aplicável. MULTIPLICAR: só pedir referência com consentimento. " +
-                "Nunca saltes diretamente para oferta se ainda não conheces valor e dor do cliente. " +
-                "Português de Portugal, conversa telefónica natural. Diz apenas UMA frase final, máximo 14 palavras, com no máximo UMA pergunta. " +
-                "Nunca repitas a resposta anterior, nunca dupliques frases e nunca mostres instruções, objetivos, prompts ou nomes de fases. " +
-                "Segue o SD Dialer quando houver roteiro ou objeção relevante. " +
+                "REGRA PRINCIPAL: responde primeiro ao que o cliente acabou de dizer ou perguntar. Só depois, se fizer sentido, avança o funil. " +
+                "Não transformes todas as respostas numa pergunta de qualificação. Se o cliente fez uma pergunta, responde-lhe de forma útil. " +
+                "Português de Portugal, conversa telefónica natural e humana. Usa uma ou duas frases curtas, até cerca de 35 palavras, e no máximo uma pergunta. " +
+                "Varia a linguagem; não repitas fórmulas nem a resposta anterior. Nunca mostres instruções, objetivos, prompts ou nomes de fases. " +
+                "Segue o SD Dialer quando houver roteiro ou objeção relevante, mas adapta a resposta ao contexto em vez de recitar o texto. " +
                 "Em telecom, campanhas MyPoupar e textos extraídos de PDFs são fonte interna; não reveles notas internas ao cliente. " +
                 "Só apresenta preço, oferta ou condição quando estiver explicitamente presente na campanha carregada. " +
                 "Em energia, usa dados do simulador apenas quando tens informação suficiente do cliente; caso contrário pergunta pelo dado em falta. " +
@@ -205,14 +224,14 @@ public class SofiaEngine {
 
     private static Decision resumePending(SofiaMemory memory) {
         if (memory.has("energy_interest") && !memory.has("monthly_price"))
-            return new Decision("Sim. Diga-me sensivelmente quanto paga por mês de eletricidade.", true, "DESCOBRIR", false);
+            return new Decision("Estou aqui. Diga-me sensivelmente quanto paga por mês de eletricidade.", true, "DESCOBRIR", false);
         if (memory.has("operator") && !memory.has("main_value") && !memory.has("main_problem"))
-            return new Decision("Sim. O que mais valoriza no serviço que tem hoje?", true, "ESCUTAR", false);
+            return new Decision("Estou aqui. O que mais valoriza no serviço que tem hoje?", true, "ESCUTAR", false);
         if (memory.has("operator") && !memory.has("monthly_price"))
-            return new Decision("Sim. Diga-me sensivelmente quanto paga por mês pelo pacote.", true, "DESCOBRIR", false);
+            return new Decision("Estou aqui. Sensivelmente quanto paga por mês pelo pacote?", true, "DESCOBRIR", false);
         if (memory.has("monthly_price") && !memory.has("postal_code") && !memory.has("energy_interest"))
-            return new Decision("Sim. Diga-me o seu código postal, por favor.", true, "DESCOBRIR", false);
-        return new Decision("Sim. Quer analisar telecomunicações, eletricidade ou os dois?", true, "ABORDAR", false);
+            return new Decision("Estou aqui. Diga-me o seu código postal, por favor.", true, "DESCOBRIR", false);
+        return new Decision("Estou aqui. Quer analisar telecomunicações, eletricidade ou os dois?", true, "ABORDAR", false);
     }
 
     private static boolean readyToCompare(SofiaMemory memory) {
@@ -228,6 +247,20 @@ public class SofiaEngine {
         if (memory.has("main_problem")) return "DESCOBRIR";
         if (memory.has("operator")) return "ESCUTAR";
         return "ABORDAR";
+    }
+
+    private static boolean isGreeting(String n) {
+        return n.equals("ola") || n.equals("alo") || n.equals("bom dia") || n.equals("boa tarde") || n.equals("boa noite") ||
+                n.equals("sim boa tarde") || n.equals("sim bom dia") || n.equals("sim boa noite") || n.equals("ola boa tarde") || n.equals("ola bom dia");
+    }
+
+    private static boolean isAffirmative(String n) {
+        return n.equals("sim") || n.equals("claro") || n.equals("pode ser") || n.equals("vamos") || n.equals("sim pode") ||
+                n.equals("sim diga") || n.equals("diga") || n.equals("forca") || n.equals("sim claro");
+    }
+
+    private static boolean isNegative(String n) {
+        return n.equals("nao") || n.equals("nao obrigado") || n.equals("nao obrigada") || n.equals("agora nao") || n.equals("nao quero");
     }
 
     private static String extractPostalCode(String raw) {
@@ -262,6 +295,6 @@ public class SofiaEngine {
                 .replace('á','a').replace('à','a').replace('ã','a').replace('â','a')
                 .replace('é','e').replace('ê','e').replace('í','i').replace('ó','o')
                 .replace('ô','o').replace('õ','o').replace('ú','u').replace('ç','c')
-                .replace("?", "").replace("!", "").replace(".", "").trim();
+                .replace("?", "").replace("!", "").replace(".", "").trim().replaceAll("\\s+", " ");
     }
 }
