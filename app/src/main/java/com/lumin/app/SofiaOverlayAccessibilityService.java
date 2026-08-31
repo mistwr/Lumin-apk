@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.telephony.TelephonyManager;
@@ -20,6 +21,7 @@ import java.util.Locale;
 /** Samsung bridge for REBORN AI Calling -> Samsung Text Call. */
 public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService {
     private static final long OPENING_DELAY_MS = 1800L;
+    private static final long PENDING_REPLY_POLL_MS = 240L;
 
     private SharedPreferences control;
     private SharedPreferences diag;
@@ -31,6 +33,13 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
     private boolean callSeen = false;
     private boolean phoneReceiverRegistered = false;
 
+    private final Runnable pendingReplyWatchdog = new Runnable() {
+        @Override public void run() {
+            try { maybeRecoverPendingReply(); } catch (Throwable ignored) {}
+            if (callSeen) main.postDelayed(this, PENDING_REPLY_POLL_MS);
+        }
+    };
+
     private final BroadcastReceiver phoneStateReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (intent == null || !TelephonyManager.ACTION_PHONE_STATE_CHANGED.equals(intent.getAction())) return;
@@ -39,6 +48,8 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
             if (TelephonyManager.EXTRA_STATE_OFFHOOK.equals(state) || TelephonyManager.EXTRA_STATE_RINGING.equals(state)) {
                 callSeen = true;
                 if (diag != null) diag.edit().putString("call_state", state).apply();
+                main.removeCallbacks(pendingReplyWatchdog);
+                main.post(pendingReplyWatchdog);
                 return;
             }
             if (TelephonyManager.EXTRA_STATE_IDLE.equals(state)) {
@@ -47,6 +58,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
                     callSeen = false;
                     main.postDelayed(() -> RebornCallSessionSync.finalizeCallAsync(SofiaOverlayAccessibilityService.this), 700L);
                 }
+                main.removeCallbacks(pendingReplyWatchdog);
                 openingScheduled = false;
                 lastForcedText = "";
             }
@@ -91,7 +103,10 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         if (!"com.samsung.android.incallui".contentEquals(event.getPackageName())) return;
         callSeen = true;
         maybeAutoEnterTextCall();
+        maybeRecoverPendingReply();
         maybeForceSendGeneratedReply();
+        main.removeCallbacks(pendingReplyWatchdog);
+        main.postDelayed(pendingReplyWatchdog, PENDING_REPLY_POLL_MS);
     }
 
     private void maybeAutoEnterTextCall() {
@@ -117,7 +132,6 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
                 openingScheduled = true;
                 control.edit().remove("auto_text_call_armed_at").apply();
                 diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_REBORN_AGENDADA").apply();
-                // Samsung keeps its mandatory disclosure. REBORN enters shortly after Text Call is ready.
                 main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, OPENING_DELAY_MS);
             }
             return;
@@ -151,6 +165,44 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         diag.edit().putString("auto_text_call", "A_AGUARDAR_BOTAO").apply();
     }
 
+    /**
+     * If the base driver generated a reply while Samsung still had its composer disabled
+     * (normally during the mandatory disclosure), keep the reply pending and inject it
+     * as soon as the editable field becomes enabled. This avoids losing the first turn.
+     */
+    private void maybeRecoverPendingReply() {
+        if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
+        if (diag == null) diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
+        if (!"AUTO".equals(control.getString("mode", "AUTO"))) return;
+
+        String pending = control.getString("suggested_reply", "").trim();
+        if (pending.isEmpty()) return;
+
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (!isSamsung(root)) return;
+        AccessibilityNodeInfo edit = findEditable(root);
+        if (edit == null || !edit.isEnabled()) {
+            diag.edit().putString("composer_watchdog", "PENDENTE · SAMSUNG_BLOQUEADO").apply();
+            return;
+        }
+
+        String current = edit.getText() == null ? "" : edit.getText().toString().trim();
+        if (same(current, pending)) {
+            diag.edit().putString("composer_watchdog", "TEXTO_PRONTO · A_ENVIAR").apply();
+            maybeForceSendGeneratedReply();
+            return;
+        }
+        if (!current.isEmpty()) return;
+
+        edit.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+        edit.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+        Bundle args = new Bundle();
+        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, pending);
+        boolean ok = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+        diag.edit().putString("composer_watchdog", ok ? "RECUPERADO · SET_TEXT" : "SET_TEXT_FALHOU · NOVA_TENTATIVA").apply();
+        if (ok) main.postDelayed(this::maybeForceSendGeneratedReply, 80L);
+    }
+
     private void maybeForceSendGeneratedReply() {
         if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
         if (diag == null) diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
@@ -159,7 +211,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (!isSamsung(root)) return;
         AccessibilityNodeInfo edit = findEditable(root);
-        if (edit == null || edit.getText() == null) return;
+        if (edit == null || !edit.isEnabled() || edit.getText() == null) return;
 
         String current = edit.getText().toString().trim();
         if (current.isEmpty() || current.length() < 2) return;
@@ -204,19 +256,28 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
 
     private void sendConfiguredOpeningIfStillInTextCall() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (!isSamsung(root) || findEditable(root) == null) {
+        AccessibilityNodeInfo edit = isSamsung(root) ? findEditable(root) : null;
+        if (edit == null) {
             diag.edit().putString("auto_text_call", "ABERTURA_CANCELADA · TEXT_CALL_FECHADO").apply();
             openingScheduled = false;
             return;
         }
         String opening = control.getString("agent_opening", SofiaAgentProfile.opening()).trim();
         if (opening.isEmpty()) return;
-        Intent i = new Intent(SofiaAccessibilityService.ACTION_SEND_REPLY);
-        i.setPackage(getPackageName());
-        i.putExtra(SofiaAccessibilityService.EXTRA_REPLY, opening);
-        sendBroadcast(i);
-        diag.edit().putString("auto_text_call", "ABERTURA_REBORN_ENVIADA · " + OPENING_DELAY_MS + "ms").apply();
-        main.postDelayed(this::maybeForceSendGeneratedReply, 300L);
+
+        // Queue the opening through the same pending-reply mechanism if Samsung is not ready yet.
+        control.edit().putString("suggested_reply", opening).apply();
+        if (edit.isEnabled()) {
+            Intent i = new Intent(SofiaAccessibilityService.ACTION_SEND_REPLY);
+            i.setPackage(getPackageName());
+            i.putExtra(SofiaAccessibilityService.EXTRA_REPLY, opening);
+            sendBroadcast(i);
+            diag.edit().putString("auto_text_call", "ABERTURA_REBORN_ENVIADA · " + OPENING_DELAY_MS + "ms").apply();
+        } else {
+            diag.edit().putString("auto_text_call", "ABERTURA_REBORN_EM_FILA · SAMSUNG_BLOQUEADO").apply();
+            main.removeCallbacks(pendingReplyWatchdog);
+            main.post(pendingReplyWatchdog);
+        }
     }
 
     private boolean isSamsung(AccessibilityNodeInfo root) {
@@ -267,6 +328,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
     }
 
     @Override public void onDestroy() {
+        main.removeCallbacks(pendingReplyWatchdog);
         if (phoneReceiverRegistered) {
             try { unregisterReceiver(phoneStateReceiver); } catch (Throwable ignored) {}
             phoneReceiverRegistered = false;
