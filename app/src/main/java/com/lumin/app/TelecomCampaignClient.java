@@ -11,7 +11,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
-/** REBORN AI -> MyPoupar Supabase active telecom campaign cache. */
+/** REBORN AI -> protected MyPoupar telecom campaign cache. */
 public final class TelecomCampaignClient {
     private static final String PREFS = "reborn_telecom_campaigns";
     private static final long TTL_MS = 10 * 60 * 1000L;
@@ -24,17 +24,17 @@ public final class TelecomCampaignClient {
 
     public static boolean refresh(Context context) {
         String base = BuildConfig.MYPOUPAR_SUPABASE_URL == null ? "" : BuildConfig.MYPOUPAR_SUPABASE_URL.trim();
-        String key = BuildConfig.MYPOUPAR_SUPABASE_KEY == null ? "" : BuildConfig.MYPOUPAR_SUPABASE_KEY.trim();
-        if (base.isEmpty() || key.isEmpty()) return false;
+        String indigoAnon = BuildConfig.SUPABASE_ANON_KEY == null ? "" : BuildConfig.SUPABASE_ANON_KEY.trim();
+        String accessToken = BuildConfig.SUPABASE_ACCESS_TOKEN == null ? "" : BuildConfig.SUPABASE_ACCESS_TOKEN.trim();
+        if (base.isEmpty() || indigoAnon.isEmpty() || accessToken.isEmpty()) return false;
+
         try {
-            String endpoint = base.replaceAll("/$", "") +
-                    "/rest/v1/campanhas?select=id,title,operator,service_type,description,status,created_at" +
-                    "&status=eq.ativa&service_type=eq.telecom&order=created_at.desc&limit=100";
+            String endpoint = base.replaceAll("/$", "") + "/functions/v1/reborn-campaign-feed";
             HttpURLConnection c = (HttpURLConnection) new URL(endpoint).openConnection();
-            c.setConnectTimeout(5000);
-            c.setReadTimeout(7000);
-            c.setRequestProperty("apikey", key);
-            c.setRequestProperty("Authorization", "Bearer " + key);
+            c.setConnectTimeout(6000);
+            c.setReadTimeout(25000);
+            c.setRequestProperty("Authorization", "Bearer " + accessToken);
+            c.setRequestProperty("x-indigo-apikey", indigoAnon);
             c.setRequestProperty("Accept", "application/json");
             int code = c.getResponseCode();
             if (code < 200 || code >= 300) return false;
@@ -43,11 +43,17 @@ public final class TelecomCampaignClient {
             StringBuilder body = new StringBuilder();
             String line;
             while ((line = r.readLine()) != null) body.append(line);
-            JSONArray arr = new JSONArray(body.toString());
+            r.close();
+
+            JSONObject root = new JSONObject(body.toString());
+            JSONArray arr = root.optJSONArray("campaigns");
+            if (arr == null) arr = new JSONArray();
+
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putString("campaigns_json", arr.toString())
                     .putLong("updated_at", System.currentTimeMillis())
                     .putInt("count", arr.length())
+                    .putInt("processed_pdfs", root.optInt("processed_pdfs", 0))
                     .apply();
             return true;
         } catch (Throwable ignored) {
@@ -61,21 +67,42 @@ public final class TelecomCampaignClient {
         if (age > TTL_MS) refreshAsync(context);
         String raw = p.getString("campaigns_json", "[]");
         if (raw == null || raw.equals("[]")) return "";
+
         try {
             JSONArray arr = new JSONArray(raw);
             String wanted = operator == null ? "" : normalize(operator);
-            StringBuilder out = new StringBuilder(" CAMPANHAS TELECOM MYPOUPAR ATIVAS: ");
+            StringBuilder out = new StringBuilder(" CAMPANHAS TELECOM MYPOUPAR ATIVAS E INTERNAS: ");
             int used = 0;
-            for (int i = 0; i < arr.length() && used < 6; i++) {
+            for (int i = 0; i < arr.length() && used < 5; i++) {
                 JSONObject o = arr.optJSONObject(i);
                 if (o == null) continue;
                 String op = o.optString("operator", "");
                 if (!wanted.isEmpty() && !normalize(op).equals(wanted)) continue;
+
                 String title = clean(o.optString("title", ""));
                 String desc = clean(o.optString("description", ""));
-                if (title.isEmpty() && desc.isEmpty()) continue;
+                String discount = clean(o.optString("discount", ""));
+                String start = clean(o.optString("start_date", ""));
+                String end = clean(o.optString("end_date", ""));
+                JSONArray materials = o.optJSONArray("materials");
+
                 out.append("[").append(op).append(" | ").append(title);
-                if (!desc.isEmpty()) out.append(" | ").append(limit(desc, 260));
+                if (!desc.isEmpty()) out.append(" | ").append(limit(desc, 420));
+                if (!discount.isEmpty()) out.append(" | desconto: ").append(limit(discount, 160));
+                if (!start.isEmpty()) out.append(" | início: ").append(start);
+                if (!end.isEmpty()) out.append(" | fim: ").append(end);
+
+                if (materials != null) {
+                    int materialUsed = 0;
+                    for (int j = 0; j < materials.length() && materialUsed < 2; j++) {
+                        JSONObject m = materials.optJSONObject(j);
+                        if (m == null) continue;
+                        String text = clean(m.optString("text_excerpt", ""));
+                        if (text.isEmpty()) continue;
+                        out.append(" | PDF: ").append(limit(text, wanted.isEmpty() ? 260 : 900));
+                        materialUsed++;
+                    }
+                }
                 out.append("] ");
                 used++;
             }
