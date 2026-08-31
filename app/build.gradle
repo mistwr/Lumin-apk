@@ -14,9 +14,11 @@ android {
         versionCode 621
         versionName "6.2.1"
 
-        buildConfigField "String", "SUPABASE_URL", '"' + (project.findProperty("SOFIA_SUPABASE_URL") ?: "") + '"'
-        buildConfigField "String", "SUPABASE_ANON_KEY", '"' + (project.findProperty("SOFIA_SUPABASE_ANON_KEY") ?: "") + '"'
-        buildConfigField "String", "SUPABASE_ACCESS_TOKEN", '"' + (project.findProperty("SOFIA_SUPABASE_ACCESS_TOKEN") ?: "") + '"'
+        // Public Supabase connection details can safely ship in the client.
+        // User access is protected by Supabase Auth/RLS and short-lived session JWTs.
+        buildConfigField "String", "SUPABASE_URL", '"https://yqninaripblwhcfcwwnr.supabase.co"'
+        buildConfigField "String", "SUPABASE_ANON_KEY", '"sb_publishable_zlhSNpfeS3gjBDPsxOPiCQ_DYkKwgb_"'
+        buildConfigField "String", "SUPABASE_ACCESS_TOKEN", '""'
         buildConfigField "String", "QWEN_ENDPOINT", '"' + (project.findProperty("SOFIA_QWEN_ENDPOINT") ?: "http://127.0.0.1:11434/api/generate") + '"'
         buildConfigField "String", "MYPOUPAR_SUPABASE_URL", '"https://lblnhttwadvofhkhkbsv.supabase.co"'
     }
