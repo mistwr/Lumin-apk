@@ -104,10 +104,12 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         if (control == null) return;
         String current = control.getString("agent_opening", "").trim();
         String n = normalize(current);
-        if (current.isEmpty() || n.contains("falo da mypoupar") || n.contains("perceber se consegue poupar")) {
-            String name = control.getString("agent_name", "SOFIA").trim();
-            if (name.isEmpty()) name = "SOFIA";
-            String replacement = "Olá, sou a " + name + " da MyPoupar. Vamos direto ao assunto: posso fazer-lhe duas perguntas rápidas para ver se consegue poupar?";
+        if (current.isEmpty() ||
+                n.contains("falo da mypoupar") ||
+                n.contains("perceber se consegue poupar") ||
+                n.contains("vamos direto ao assunto") ||
+                n.contains("quer ver onde pode poupar")) {
+            String replacement = "Olá, está a falar com a MyPoupar. Esta chamada usa assistência de voz para transformar a conversa em texto e gerar respostas. Se estiver de acordo, continuamos.";
             control.edit().putString("agent_opening", replacement).apply();
         }
     }
