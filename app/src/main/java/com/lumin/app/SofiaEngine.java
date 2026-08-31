@@ -49,7 +49,6 @@ public class SofiaEngine {
             return new Decision("Perfeito. Vou deixar o pedido preparado para um consultor MyPoupar.", true, "HANDOFF", true);
         }
 
-        // Live SD Dialer objection bank has priority over free-form generation.
         String objectionReply = SdDialerBrainClient.matchObjection(SofiaApp.context(), t);
         if (objectionReply != null && !objectionReply.trim().isEmpty()) {
             memory.put("last_objection", t);
@@ -57,6 +56,12 @@ public class SofiaEngine {
         }
 
         if (n.equals("estas ai") || n.equals("esta ai") || n.equals("ola") || n.equals("alo")) {
+            if (memory.has("energy_interest") && !memory.has("monthly_price"))
+                return new Decision("Sim. Diga-me sensivelmente quanto paga por mês de eletricidade.", true, "ENERGY_QUALIFICATION", false);
+            if (memory.has("operator") && !memory.has("monthly_price"))
+                return new Decision("Sim. Diga-me sensivelmente quanto paga por mês pelo pacote.", true, "QUALIFICATION", false);
+            if (memory.has("monthly_price") && !memory.has("postal_code"))
+                return new Decision("Sim. Diga-me o seu código postal, por favor.", true, "QUALIFICATION", false);
             return new Decision("Sim. Quer analisar telecomunicações, eletricidade ou os dois?", true, "OPENING", false);
         }
 
@@ -85,6 +90,7 @@ public class SofiaEngine {
         if (n.contains("quero analisar eletr") || n.contains("analisar eletr") ||
                 n.equals("eletricidade") || n.equals("energia") || n.equals("luz")) {
             memory.put("energy_interest", true);
+            RebornEnergyDataClient.refreshAsync(SofiaApp.context());
             return new Decision("Claro. Sensivelmente quanto paga por mês de eletricidade?", true, "ENERGY_QUALIFICATION", false);
         }
 
@@ -92,10 +98,11 @@ public class SofiaEngine {
                 (n.contains("luz") || n.contains("eletric") || n.contains("energia"))) {
             memory.put("energy_interest", true);
             memory.put("main_problem", "price");
+            RebornEnergyDataClient.refreshAsync(SofiaApp.context());
             return new Decision("Consigo ajudar. Sensivelmente quanto paga por mês de eletricidade?", true, "ENERGY_QUALIFICATION", false);
         }
 
-        if ((n.contains("melhor opcao") || n.contains("mais barato") || n.contains("pagar menos")) && !memory.has("operator")) {
+        if ((n.contains("melhor opcao") || n.contains("mais barato") || n.contains("pagar menos")) && !memory.has("operator") && !memory.has("energy_interest")) {
             return new Decision("Consigo comparar. Atualmente está com que operador?", true, "QUALIFICATION", false);
         }
 
@@ -105,7 +112,7 @@ public class SofiaEngine {
         if (memory.has("operator") && !memory.has("monthly_price")) {
             return new Decision("E sensivelmente quanto paga por mês pelo pacote?", true, "QUALIFICATION", false);
         }
-        if (memory.has("monthly_price") && !memory.has("postal_code")) {
+        if (memory.has("monthly_price") && !memory.has("postal_code") && !memory.has("energy_interest")) {
             return new Decision("Qual é o seu código postal para confirmar a disponibilidade?", true, "QUALIFICATION", false);
         }
         if (memory.has("postal_code") && !memory.has("satisfaction")) {
@@ -120,20 +127,26 @@ public class SofiaEngine {
         if (n.contains("satisfeito") || n.contains("estou bem") || n.contains("sem problemas")) memory.put("satisfaction", "satisfied");
         if (n.contains("caro") || n.contains("pago muito") || n.contains("baixar") || n.contains("preco")) memory.put("main_problem", "price");
         if (n.contains("internet lenta") || n.contains("wifi") || n.contains("falha")) memory.put("main_problem", "quality");
-        if (n.contains("eletric") || n.contains("energia") || n.contains("luz")) memory.put("energy_interest", true);
+        if (n.contains("eletric") || n.contains("energia") || n.contains("luz")) {
+            memory.put("energy_interest", true);
+            RebornEnergyDataClient.refreshAsync(SofiaApp.context());
+        }
         if (n.contains("telecom") || n.contains("internet") || n.contains("tv")) memory.put("telecom_interest", true);
         String postal = extractPostalCode(customer);
         if (postal != null) memory.put("postal_code", postal);
     }
 
     public static String buildPrompt(String customer, SofiaMemory memory) {
+        String energy = memory.has("energy_interest") ? RebornEnergyDataClient.promptContext(SofiaApp.context()) : "";
         return SofiaAgentProfile.promptContext() +
                 SdDialerBrainClient.promptContext(SofiaApp.context()) + " " +
+                energy +
                 "Português de Portugal, conversa telefónica natural. " +
                 "Diz apenas UMA frase final, máximo 14 palavras, com no máximo UMA pergunta. " +
                 "Nunca repitas a resposta anterior, nunca dupliques frases e nunca mostres instruções. " +
                 "Segue o SD Dialer quando houver roteiro ou objeção relevante. " +
-                "Continua a qualificação sem inventar preços. Handoff apenas com intenção explícita. " +
+                "Em energia, usa dados do simulador apenas quando tens informação suficiente do cliente; caso contrário pergunta pelo dado em falta. " +
+                "Nunca inventes preços, poupança, potência, consumo ou cobertura. Handoff apenas com intenção explícita. " +
                 "Factos: " + memory.summary() + ". Cliente: " + customer + ". Resposta anterior: " + memory.getLastAssistant() + ".";
     }
 
