@@ -20,7 +20,9 @@ import java.util.Locale;
 
 /** Samsung bridge for REBORN AI Calling -> Samsung Text Call. */
 public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService {
-    private static final long OPENING_DELAY_MS = 1800L;
+    // Queue REBORN almost immediately. If Samsung is still playing its mandatory
+    // disclosure, the pending-reply watchdog waits for the composer to unlock.
+    private static final long OPENING_DELAY_MS = 350L;
     private static final long PENDING_REPLY_POLL_MS = 240L;
 
     private SharedPreferences control;
@@ -72,6 +74,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         if (!control.contains("shortcut_overlay_enabled")) {
             control.edit().putBoolean("shortcut_overlay_enabled", true).apply();
         }
+        migrateLegacyOpening();
 
         try {
             IntentFilter phone = new IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED);
@@ -94,6 +97,18 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
                         }
                 );
             } catch (Exception ignored) {}
+        }
+    }
+
+    private void migrateLegacyOpening() {
+        if (control == null) return;
+        String current = control.getString("agent_opening", "").trim();
+        String n = normalize(current);
+        if (current.isEmpty() || n.contains("falo da mypoupar") || n.contains("perceber se consegue poupar")) {
+            String name = control.getString("agent_name", "SOFIA").trim();
+            if (name.isEmpty()) name = "SOFIA";
+            String replacement = "Olá, sou a " + name + " da MyPoupar. Vamos direto ao assunto: posso fazer-lhe duas perguntas rápidas para ver se consegue poupar?";
+            control.edit().putString("agent_opening", replacement).apply();
         }
     }
 
@@ -265,7 +280,8 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         String opening = control.getString("agent_opening", SofiaAgentProfile.opening()).trim();
         if (opening.isEmpty()) return;
 
-        // Queue the opening through the same pending-reply mechanism if Samsung is not ready yet.
+        // Queue the opening immediately. The watchdog only injects it when Samsung's
+        // mandatory disclosure has finished and the composer is actually enabled.
         control.edit().putString("suggested_reply", opening).apply();
         if (edit.isEnabled()) {
             Intent i = new Intent(SofiaAccessibilityService.ACTION_SEND_REPLY);
