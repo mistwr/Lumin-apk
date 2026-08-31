@@ -2,18 +2,22 @@ package com.lumin.app;
 
 import android.accessibilityservice.AccessibilityButtonController;
 import android.accessibilityservice.GestureDescription;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.telephony.TelephonyManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import java.util.Locale;
 
-/** Samsung bridge for AI Calling -> Samsung Text Call. */
+/** Samsung bridge for REBORN AI Calling -> Samsung Text Call. */
 public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService {
     private SharedPreferences control;
     private SharedPreferences diag;
@@ -22,6 +26,30 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
     private long lastForceSendAt = 0L;
     private String lastForcedText = "";
     private boolean openingScheduled = false;
+    private boolean callSeen = false;
+    private boolean phoneReceiverRegistered = false;
+
+    private final BroadcastReceiver phoneStateReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null || !TelephonyManager.ACTION_PHONE_STATE_CHANGED.equals(intent.getAction())) return;
+            String state = intent.getStringExtra(TelephonyManager.EXTRA_STATE);
+            if (state == null) return;
+            if (TelephonyManager.EXTRA_STATE_OFFHOOK.equals(state) || TelephonyManager.EXTRA_STATE_RINGING.equals(state)) {
+                callSeen = true;
+                if (diag != null) diag.edit().putString("call_state", state).apply();
+                return;
+            }
+            if (TelephonyManager.EXTRA_STATE_IDLE.equals(state)) {
+                if (diag != null) diag.edit().putString("call_state", "IDLE").apply();
+                if (callSeen) {
+                    callSeen = false;
+                    main.postDelayed(() -> RebornCallSessionSync.finalizeCallAsync(SofiaOverlayAccessibilityService.this), 700L);
+                }
+                openingScheduled = false;
+                lastForcedText = "";
+            }
+        }
+    };
 
     @Override public void onServiceConnected() {
         super.onServiceConnected();
@@ -29,6 +57,15 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
         if (!control.contains("shortcut_overlay_enabled")) {
             control.edit().putBoolean("shortcut_overlay_enabled", true).apply();
+        }
+
+        try {
+            IntentFilter phone = new IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED);
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(phoneStateReceiver, phone, Context.RECEIVER_NOT_EXPORTED);
+            else registerReceiver(phoneStateReceiver, phone);
+            phoneReceiverRegistered = true;
+        } catch (Throwable t) {
+            diag.edit().putString("phone_state_receiver", "ERRO: " + (t.getMessage() == null ? "" : t.getMessage())).apply();
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -50,6 +87,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         super.onAccessibilityEvent(event);
         if (event == null || event.getPackageName() == null) return;
         if (!"com.samsung.android.incallui".contentEquals(event.getPackageName())) return;
+        callSeen = true;
         maybeAutoEnterTextCall();
         maybeForceSendGeneratedReply();
     }
@@ -77,7 +115,6 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
                 openingScheduled = true;
                 control.edit().remove("auto_text_call_armed_at").apply();
                 diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_AGENDADA").apply();
-                // Let Samsung finish its own Text Call introduction before our configured opening.
                 main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, 2800L);
             }
             return;
@@ -111,13 +148,6 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         diag.edit().putString("auto_text_call", "A_AGUARDAR_BOTAO").apply();
     }
 
-    /**
-     * Samsung sometimes exposes the editable composer but not the green send button.
-     * The base driver first tries semantic ACTION_CLICK / IME enter. If the generated
-     * reply is still sitting in the composer, this fallback taps the control immediately
-     * to the right of the composer. It only runs in AUTO mode and only for text that
-     * SOFIA itself generated, never arbitrary user text.
-     */
     private void maybeForceSendGeneratedReply() {
         if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
         if (diag == null) diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
@@ -143,7 +173,6 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         root.getBoundsInScreen(rootRect);
         if (editRect.isEmpty() || rootRect.isEmpty()) return;
 
-        // First retry the keyboard's enter/send action when Samsung exposes it.
         if (Build.VERSION.SDK_INT >= 30) {
             try {
                 boolean ime = edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
@@ -232,5 +261,13 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
             cur = cur.getParent();
         }
         return null;
+    }
+
+    @Override public void onDestroy() {
+        if (phoneReceiverRegistered) {
+            try { unregisterReceiver(phoneStateReceiver); } catch (Throwable ignored) {}
+            phoneReceiverRegistered = false;
+        }
+        super.onDestroy();
     }
 }
