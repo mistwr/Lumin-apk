@@ -19,6 +19,8 @@ import java.util.Locale;
 
 /** Samsung bridge for REBORN AI Calling -> Samsung Text Call. */
 public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService {
+    private static final long OPENING_DELAY_MS = 1800L;
+
     private SharedPreferences control;
     private SharedPreferences diag;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -114,8 +116,9 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
             if (!openingScheduled) {
                 openingScheduled = true;
                 control.edit().remove("auto_text_call_armed_at").apply();
-                diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_AGENDADA").apply();
-                main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, 2800L);
+                diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_REBORN_AGENDADA").apply();
+                // Samsung keeps its mandatory disclosure. REBORN enters shortly after Text Call is ready.
+                main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, OPENING_DELAY_MS);
             }
             return;
         }
@@ -212,7 +215,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         i.setPackage(getPackageName());
         i.putExtra(SofiaAccessibilityService.EXTRA_REPLY, opening);
         sendBroadcast(i);
-        diag.edit().putString("auto_text_call", "ABERTURA_ENVIADA").apply();
+        diag.edit().putString("auto_text_call", "ABERTURA_REBORN_ENVIADA · " + OPENING_DELAY_MS + "ms").apply();
         main.postDelayed(this::maybeForceSendGeneratedReply, 300L);
     }
 
