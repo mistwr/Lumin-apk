@@ -8,6 +8,8 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.Settings;
+import android.telecom.TelecomManager;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -18,6 +20,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 public class SofiaAiCallingActivity extends AppCompatActivity {
@@ -60,7 +63,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
         LinearLayout hero = card();
         hero.addView(text("● REBORN BRAIN ONLINE", 13, Color.rgb(106,235,183), true));
-        hero.addView(text("Agentes, SD Dialer, campanhas telecom MyPoupar e dados energéticos trabalham no mesmo fluxo.", 15, Color.rgb(223,229,246), false));
+        hero.addView(text("Samsung gere a chamada. REBORN AI usa o Text Call, SD Dialer e dados MyPoupar.", 15, Color.rgb(223,229,246), false));
         root.addView(hero);
 
         root.addView(section("CLIENTE"));
@@ -115,7 +118,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         save.setOnClickListener(v -> saveProfile());
         root.addView(save,buttonParams());
 
-        TextView note = text("Build 61.2 · campanhas telecom/PDF MyPoupar + SD Dialer + energia", 12, Color.rgb(106,235,183), true);
+        TextView note = text("Build 61.3 · recuperação Samsung Text Call + campanhas/SD Dialer/energia", 12, Color.rgb(106,235,183), true);
         note.setPadding(0,dp(18),0,0); root.addView(note);
 
         TextView credit = text("Criado pela MyPoupar · Desenvolvido pelo CEO da MyPoupar com apoio da Soluções Diferentes · Feito por REBORN AI", 12, Color.rgb(145,157,191), false);
@@ -164,12 +167,50 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
     private void prepareAndCall() {
         saveProfile();
+
+        if (isThisAppDefaultDialer()) {
+            Toast.makeText(this, "Escolhe Telefone Samsung como app de telefone predefinida e volta ao REBORN AI.", Toast.LENGTH_LONG).show();
+            try { startActivity(new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)); }
+            catch (Throwable t) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+            return;
+        }
+
+        if (!isAccessibilityDriverEnabled()) {
+            Toast.makeText(this, "Ativa o serviço REBORN AI/SOFIA em Acessibilidade para abrir o Samsung Text Call automaticamente.", Toast.LENGTH_LONG).show();
+            try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+            catch (Throwable t) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+            return;
+        }
+
         refreshBrains();
         String number=val(phone).replace(" ","");
         if(number.isEmpty()){phone.setError("Introduz um número");return;}
         control.edit().putString("dial_phone",number).putLong("call_started_at",System.currentTimeMillis()).putBoolean("call_final_synced",false).apply();
         if(checkSelfPermission(Manifest.permission.CALL_PHONE)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.CALL_PHONE},REQ_CALL);return;}
         startCall(number);
+    }
+
+    private boolean isThisAppDefaultDialer() {
+        try {
+            TelecomManager tm = (TelecomManager) getSystemService(TELECOM_SERVICE);
+            String current = tm == null ? null : tm.getDefaultDialerPackage();
+            return current != null && current.equals(getPackageName());
+        } catch (Throwable ignored) { return false; }
+    }
+
+    private boolean isAccessibilityDriverEnabled() {
+        try {
+            String enabled = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (enabled == null || enabled.trim().isEmpty()) return false;
+            String pkg = getPackageName().toLowerCase();
+            String cls = SofiaOverlayAccessibilityService.class.getName().toLowerCase();
+            String[] services = enabled.split(":");
+            for (String s : services) {
+                String n = s == null ? "" : s.toLowerCase();
+                if (n.contains(pkg) && (n.contains("sofiaoverlayaccessibilityservice") || n.contains(cls))) return true;
+            }
+            return false;
+        } catch (Throwable ignored) { return false; }
     }
 
     private void startCall(String number) {
