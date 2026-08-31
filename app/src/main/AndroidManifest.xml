@@ -12,6 +12,8 @@
     <application
         android:name=".SofiaApp"
         android:allowBackup="true"
+        android:icon="@drawable/ic_reborn_ai"
+        android:roundIcon="@drawable/ic_reborn_ai"
         android:label="REBORN AI"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
