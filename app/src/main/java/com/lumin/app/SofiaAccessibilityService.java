@@ -3,6 +3,8 @@ package com.lumin.app;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -31,6 +33,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private static final long POLL_MS = 180L;
     private static final long TURN_SILENCE_MS = 720L;
+    private static final long REPLY_WATCHDOG_MS = 1800L;
 
     private final SofiaMemory memory = new SofiaMemory();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -44,6 +47,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private long observedCandidateSince = 0L;
     private volatile boolean busy = false;
     private volatile boolean destroyed = false;
+    private volatile long activeTurnId = 0L;
+    private volatile long repliedTurnId = -1L;
     private SharedPreferences diag;
     private SharedPreferences control;
     private long lastTextCallReadyAt = 0L;
@@ -99,7 +104,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             log("overlay", "ERRO: " + safe(t.getMessage()));
         }
 
-        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60.5");
+        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60.6");
         main.removeCallbacks(samsungWatcher);
         main.removeCallbacks(finalizeObservedTurn);
         main.post(samsungWatcher);
@@ -150,8 +155,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         for (String old : recentCustomers) if (sameUtterance(customer, old)) return;
         for (String q : customerQueue) if (sameUtterance(customer, q)) return;
 
-        if (busy) customerQueue.clear();
-        else if (!customerQueue.isEmpty()) customerQueue.clear();
+        customerQueue.clear();
         customerQueue.offer(customer);
         log("queue", String.valueOf(customerQueue.size()));
         log("path", busy ? "LATEST_TURN_WHILE_AI_BUSY" : "TURN_FINAL_POR_SILENCIO");
@@ -166,12 +170,19 @@ public class SofiaAccessibilityService extends AccessibilityService {
         processCustomer(next);
     }
 
+    private synchronized boolean claimReply(long turnId) {
+        if (repliedTurnId == turnId) return false;
+        repliedTurnId = turnId;
+        return true;
+    }
+
     private void processCustomer(String customer) {
         customer = customer == null ? "" : customer.trim();
         if (customer.isEmpty() || isCallState(customer)) { drainQueue(); return; }
         for (String old : recentCustomers) if (sameUtterance(customer, old)) { drainQueue(); return; }
 
         final long turnStarted = System.currentTimeMillis();
+        final long turnId = ++activeTurnId;
         lastCustomer = customer;
         recentCustomers.add(customer);
         if (recentCustomers.size() > 30) recentCustomers.remove(0);
@@ -188,11 +199,22 @@ public class SofiaAccessibilityService extends AccessibilityService {
             return;
         }
 
+        main.postDelayed(() -> {
+            if (activeTurnId != turnId || !claimReply(turnId)) return;
+            log("path", "REPLY_WATCHDOG_FALLBACK");
+            log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
+            busy = false;
+            handleGeneratedReply(fallback(), false, "QUALIFICATION", mode);
+            drainQueue();
+        }, REPLY_WATCHDOG_MS);
+
         SofiaEngine.Decision d = SofiaEngine.fastDecision(customer, memory);
         if (d != null) {
-            log("path", "FAST_PATH");
-            log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
-            handleGeneratedReply(d.reply, d.handoff, d.stage, mode);
+            if (claimReply(turnId)) {
+                log("path", "FAST_PATH");
+                log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
+                handleGeneratedReply(d.reply, d.handoff, d.stage, mode);
+            }
             drainQueue();
             return;
         }
@@ -206,11 +228,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 if (reply.isEmpty()) reply = fallback();
                 log("qwen", "OK");
                 log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
-                handleGeneratedReply(reply, false, "QUALIFICATION", mode);
+                if (claimReply(turnId)) handleGeneratedReply(reply, false, "QUALIFICATION", mode);
+                else log("qwen", "LATE_REPLY_IGNORED");
             } catch (Exception e) {
                 log("qwen", "ERRO: " + e.getClass().getSimpleName() + " " + safe(e.getMessage()));
                 log("llm_ms", String.valueOf(System.currentTimeMillis() - turnStarted));
-                handleGeneratedReply(fallback(), false, "QUALIFICATION", mode);
+                if (claimReply(turnId)) handleGeneratedReply(fallback(), false, "QUALIFICATION", mode);
             } finally {
                 busy = false;
                 main.post(this::drainQueue);
@@ -274,8 +297,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
         NodeText best = null;
         int bestBottom = Integer.MIN_VALUE;
 
-        // Important: first choose the newest bubble. Only afterwards decide whether it is a duplicate.
-        // This prevents falling back to an old transcript line higher on the screen.
         for (NodeText nt : texts) {
             String s = nt.text == null ? "" : nt.text.trim();
             if (s.length() < 2 || s.length() > 220) continue;
@@ -370,14 +391,36 @@ public class SofiaAccessibilityService extends AccessibilityService {
             boolean set = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
             log("last_reply", safeReply);
             log("set_text", String.valueOf(set));
-            if (!set) { log("send", "SET_TEXT_FAILED"); return; }
+
+            if (!set || !fieldContains(edit, safeReply)) {
+                try {
+                    ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("SOFIA", safeReply));
+                        boolean pasted = edit.performAction(AccessibilityNodeInfo.ACTION_PASTE);
+                        log("paste_text", String.valueOf(pasted));
+                        set = pasted || set;
+                    }
+                } catch (Throwable t) {
+                    log("paste_text", "ERRO: " + t.getClass().getSimpleName());
+                }
+            }
+
+            if (!set) { log("send", "SET_TEXT_AND_PASTE_FAILED"); return; }
             if (userApproved) {
                 appendTranscript("Sofia", safeReply);
                 memory.setLastAssistant(safeReply);
                 control.edit().putString("suggested_reply", "").apply();
             }
-            main.postDelayed(() -> pressSend(safeReply, 0), 110L);
+            main.postDelayed(() -> pressSend(safeReply, 0), 140L);
         });
+    }
+
+    private boolean fieldContains(AccessibilityNodeInfo edit, String expected) {
+        if (edit == null || expected == null) return false;
+        CharSequence t = edit.getText();
+        if (t == null) return false;
+        return normalizeUtterance(t.toString()).equals(normalizeUtterance(expected));
     }
 
     private void pressSend(String expectedReply, int attempt) {
@@ -423,7 +466,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo root = findSamsungRoot();
         AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
         String current = edit == null || edit.getText() == null ? "" : edit.getText().toString().trim();
-        if (current.isEmpty() || !current.equals(expectedReply.trim())) {
+        if (current.isEmpty() || !sameUtterance(current, expectedReply)) {
             log("send", "SEND_CONFIRMED");
             control.edit().putString("suggested_reply", "").apply();
             return;
