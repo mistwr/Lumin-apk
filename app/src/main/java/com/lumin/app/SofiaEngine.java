@@ -24,8 +24,6 @@ public class SofiaEngine {
         String t = customer.trim();
         String n = normalize(t);
 
-        // First extract facts. This must happen before intent routing so Samsung transcription
-        // cannot make us ignore a postal code embedded in an otherwise ordinary sentence.
         Matcher mm = MOBILE_LINES.matcher(t);
         if (mm.find()) memory.put("mobile_lines", Integer.parseInt(mm.group(1)));
 
@@ -51,6 +49,13 @@ public class SofiaEngine {
             return new Decision("Perfeito. Vou deixar o pedido preparado para um consultor MyPoupar.", true, "HANDOFF", true);
         }
 
+        // Live SD Dialer objection bank has priority over free-form generation.
+        String objectionReply = SdDialerBrainClient.matchObjection(SofiaApp.context(), t);
+        if (objectionReply != null && !objectionReply.trim().isEmpty()) {
+            memory.put("last_objection", t);
+            return new Decision(objectionReply, true, "OBJECTION", false);
+        }
+
         if (n.equals("estas ai") || n.equals("esta ai") || n.equals("ola") || n.equals("alo")) {
             return new Decision("Sim. Quer analisar telecomunicações, eletricidade ou os dois?", true, "OPENING", false);
         }
@@ -61,7 +66,6 @@ public class SofiaEngine {
             return new Decision("Posso comparar os seus serviços e procurar poupança. Começamos pelas telecomunicações?", true, "OPENING", false);
         }
 
-        // A postal code is a strong qualification fact. Acknowledge it once and move forward.
         if (postal != null) {
             if (!memory.has("operator") && memory.has("telecom_interest"))
                 return new Decision("Obrigado. E atualmente está com que operador?", true, "QUALIFICATION", false);
@@ -124,9 +128,11 @@ public class SofiaEngine {
 
     public static String buildPrompt(String customer, SofiaMemory memory) {
         return SofiaAgentProfile.promptContext() +
+                SdDialerBrainClient.promptContext(SofiaApp.context()) + " " +
                 "Português de Portugal, conversa telefónica natural. " +
                 "Diz apenas UMA frase final, máximo 14 palavras, com no máximo UMA pergunta. " +
                 "Nunca repitas a resposta anterior, nunca dupliques frases e nunca mostres instruções. " +
+                "Segue o SD Dialer quando houver roteiro ou objeção relevante. " +
                 "Continua a qualificação sem inventar preços. Handoff apenas com intenção explícita. " +
                 "Factos: " + memory.summary() + ". Cliente: " + customer + ". Resposta anterior: " + memory.getLastAssistant() + ".";
     }
@@ -135,7 +141,6 @@ public class SofiaEngine {
         if (raw == null) return null;
         Matcher m = POSTAL.matcher(raw);
         if (m.find()) return m.group(1) + "-" + m.group(2);
-
         String lower = normalize(raw);
         if (lower.contains("codigo postal") || lower.contains("postal")) {
             String digits = raw.replaceAll("\\D", "");
