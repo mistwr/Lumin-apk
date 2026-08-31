@@ -85,7 +85,11 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         save.setOnClickListener(v -> saveProfile());
         root.addView(save, buttonParams());
 
-        TextView note = text("Quando o Text Call abrir, o painel SOFIA LIVE acompanha a transcrição e responde em modo AUTO. A mensagem de aviso da Samsung ao cliente não é removida.", 12, Color.rgb(145,157,191), false);
+        Button audioLab = secondary("Audio Bridge Lab · sem root");
+        audioLab.setOnClickListener(v -> startActivity(new Intent(this, SofiaAudioBridgeLabActivity.class)));
+        root.addView(audioLab, buttonParams());
+
+        TextView note = text("Build 60.4: resposta AUTO reforçada com fallback de envio no Samsung Text Call. O Audio Bridge Lab testa as rotas públicas MIC/VOICE_COMMUNICATION sem root.", 12, Color.rgb(145,157,191), false);
         note.setPadding(0, dp(18), 0, 0);
         root.addView(note);
         return scroll;
