@@ -1,204 +1,136 @@
 package com.lumin.app;
 
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.os.Bundle;
-import android.provider.Settings;
-import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
-import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
+/** Product home. Technical setup now lives under Settings. */
 public class SetupActivity extends AppCompatActivity {
-    private TextView driverState, aiState, modelState, modeState;
-    private Button installBrain, testBrain;
-    private SharedPreferences control;
+    private TextView profileLine, callsToday, salesToday, leadsTotal, agentsActive;
+    private LinearLayout adminTools;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        control = getSharedPreferences("sofia_control", MODE_PRIVATE);
-        if (!control.contains("mode")) control.edit().putString("mode", "AUTO").apply();
         setContentView(buildUi());
-        refreshAll();
-        testAi();
+        loadProfile();
+        loadDashboard();
+        LocalQwenManager.warmUpAsync(this);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        loadDashboard();
     }
 
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(Color.rgb(6,9,20));
+        scroll.setBackgroundColor(ProductUi.BG);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(22), dp(28), dp(22), dp(40));
+        root.setPadding(ProductUi.dp(this,20), ProductUi.dp(this,28), ProductUi.dp(this,20), ProductUi.dp(this,40));
         scroll.addView(root);
 
-        root.addView(text("SOFIA", 42, Color.WHITE, true));
-        root.addView(text("MyPoupar · AI Calling", 16, Color.rgb(130,145,205), true));
-        TextView badge = text("BUILD 60.2 · GSM + SAMSUNG TEXT CALL + LLM", 12, Color.rgb(106,235,183), true);
-        badge.setPadding(0, dp(8), 0, dp(18));
-        root.addView(badge);
+        root.addView(ProductUi.text(this,"REBORN AI",12,ProductUi.ACCENT,true));
+        root.addView(ProductUi.text(this,"Calling Intelligence",34,Color.WHITE,true));
+        TextView sub = ProductUi.text(this,"MyPoupar · powered by REBORN AI · ligado ao SD Dialer",14,ProductUi.MUTED,false);
+        sub.setPadding(0,ProductUi.dp(this,4),0,ProductUi.dp(this,16));
+        root.addView(sub);
 
-        TextView intro = text("Cria o agente, define o script, escolhe o cliente e carrega CHAMAR. A Samsung transcreve e fala; a SOFIA conduz a conversa.", 16, Color.rgb(222,228,245), false);
-        intro.setPadding(0, 0, 0, dp(18));
-        root.addView(intro);
+        LinearLayout hero = ProductUi.card(this);
+        profileLine = ProductUi.text(this,"A ligar ao SD Dialer…",14,ProductUi.ACCENT,true);
+        hero.addView(profileLine);
+        TextView pitch = ProductUi.text(this,"Leads, chamadas, follow-ups, histórico, scripts e assistentes de voz num só fluxo comercial.",16,ProductUi.TEXT,false);
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1,-2); pp.topMargin=ProductUi.dp(this,8); pitch.setLayoutParams(pp);
+        hero.addView(pitch);
+        root.addView(hero);
 
-        LinearLayout statusCard = card();
-        driverState = text("○ Driver Samsung", 16, Color.rgb(255,210,120), true);
-        aiState = text("○ IA local", 16, Color.rgb(255,210,120), true);
-        modelState = text("○ Modelo local", 14, Color.rgb(180,190,220), false);
-        modeState = text("MODO · AUTO", 14, Color.rgb(106,235,183), true);
-        statusCard.addView(driverState);
-        statusCard.addView(aiState);
-        statusCard.addView(modelState);
-        statusCard.addView(modeState);
-        root.addView(statusCard);
+        root.addView(ProductUi.section(this,"HOJE"));
+        LinearLayout metrics = new LinearLayout(this); metrics.setOrientation(LinearLayout.HORIZONTAL); metrics.setWeightSum(2f);
+        callsToday = metric(metrics,"0","Chamadas");
+        salesToday = metric(metrics,"0","Vendas");
+        root.addView(metrics);
+        LinearLayout metrics2 = new LinearLayout(this); metrics2.setOrientation(LinearLayout.HORIZONTAL); metrics2.setWeightSum(2f);
+        leadsTotal = metric(metrics2,"—","Leads");
+        agentsActive = metric(metrics2,"—","Agentes IA");
+        LinearLayout.LayoutParams m2 = new LinearLayout.LayoutParams(-1,-2); m2.topMargin=ProductUi.dp(this,8); metrics2.setLayoutParams(m2);
+        root.addView(metrics2);
 
-        Button call = primaryButton("ABRIR SOFIA AI CALLING");
-        call.setOnClickListener(v -> startActivity(new Intent(this, SofiaAiCallingActivity.class)));
-        root.addView(call, primaryParams());
+        root.addView(ProductUi.section(this,"OPERAÇÃO"));
+        android.widget.Button call = ProductUi.primary(this,"Iniciar chamada com IA");
+        call.setOnClickListener(v -> startActivity(new Intent(this,SofiaAiCallingActivity.class)));
+        root.addView(call,ProductUi.buttonParams(this));
 
-        root.addView(section("CONTROLO DA SOFIA"));
-        LinearLayout modes = new LinearLayout(this);
-        modes.setOrientation(LinearLayout.HORIZONTAL);
-        Button auto = smallButton("AUTO");
-        Button assisted = smallButton("ASSISTIDO");
-        Button manual = smallButton("MANUAL");
-        auto.setOnClickListener(v -> setMode("AUTO"));
-        assisted.setOnClickListener(v -> setMode("ASSISTED"));
-        manual.setOnClickListener(v -> setMode("MANUAL"));
-        modes.addView(auto, weight());
-        modes.addView(assisted, weight());
-        modes.addView(manual, weight());
-        root.addView(modes);
+        android.widget.Button leads = ProductUi.secondary(this,"Leads");
+        leads.setOnClickListener(v -> openRecords("leads"));
+        root.addView(leads,ProductUi.buttonParams(this));
+        android.widget.Button history = ProductUi.secondary(this,"Histórico de chamadas");
+        history.setOnClickListener(v -> openRecords("history"));
+        root.addView(history,ProductUi.buttonParams(this));
 
-        TextView help = text("AUTO responde e envia. ASSISTIDO prepara a resposta para aprovares. MANUAL apenas acompanha a transcrição.", 13, Color.rgb(158,169,201), false);
-        help.setPadding(0, dp(8), 0, 0);
-        root.addView(help);
+        adminTools = new LinearLayout(this);
+        adminTools.setOrientation(LinearLayout.VERTICAL);
+        adminTools.setVisibility(View.GONE);
+        adminTools.addView(ProductUi.section(this,"GESTÃO"));
+        android.widget.Button agents = ProductUi.secondary(this,"Assistentes IA");
+        agents.setOnClickListener(v -> startActivity(new Intent(this,AgentBuilderActivity.class)));
+        adminTools.addView(agents,ProductUi.buttonParams(this));
+        android.widget.Button users = ProductUi.secondary(this,"Utilizadores e equipas");
+        users.setOnClickListener(v -> startActivity(new Intent(this,UsersAdminActivity.class)));
+        adminTools.addView(users,ProductUi.buttonParams(this));
+        root.addView(adminTools);
 
-        root.addView(section("SAMSUNG TRANSCRIPT DRIVER"));
-        Button accessibility = button("Ativar / verificar acessibilidade SOFIA");
-        accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        root.addView(accessibility, buttonParams());
+        root.addView(ProductUi.section(this,"SISTEMA"));
+        android.widget.Button settings = ProductUi.secondary(this,"Definições");
+        settings.setOnClickListener(v -> startActivity(new Intent(this,ProductSettingsActivity.class)));
+        root.addView(settings,ProductUi.buttonParams(this));
 
-        root.addView(section("CÉREBRO LOCAL"));
-        installBrain = button("Instalar cérebro local (~491 MB)");
-        installBrain.setOnClickListener(v -> installLocalBrain());
-        root.addView(installBrain, buttonParams());
-        testBrain = button("Testar IA local");
-        testBrain.setOnClickListener(v -> testAi());
-        root.addView(testBrain, buttonParams());
-
-        root.addView(section("DIAGNÓSTICO"));
-        Button console = button("Abrir consola / transcrição ao vivo");
-        console.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
-        root.addView(console, buttonParams());
-
-        TextView note = text("Ao iniciares uma chamada pela SOFIA, o driver tenta abrir o Samsung Text Call automaticamente. O aviso de utilização do assistente continua a ser reproduzido pela Samsung.", 13, Color.rgb(106,235,183), false);
-        note.setPadding(0, dp(22), 0, 0);
-        root.addView(note);
+        TextView footer = ProductUi.text(this,"O vendedor vê o essencial. Configuração, prompts e diagnóstico ficam reservados à gestão.",12,ProductUi.MUTED,false);
+        LinearLayout.LayoutParams fp=new LinearLayout.LayoutParams(-1,-2); fp.topMargin=ProductUi.dp(this,20); footer.setLayoutParams(fp); root.addView(footer);
         return scroll;
     }
 
-    private LinearLayout card() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(16), dp(14), dp(16), dp(14));
-        c.setBackgroundColor(Color.rgb(17,23,43));
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-        p.bottomMargin = dp(10);
-        c.setLayoutParams(p);
-        return c;
+    private TextView metric(LinearLayout row,String value,String label) {
+        LinearLayout c=ProductUi.card(this);
+        TextView v=ProductUi.text(this,value,26,Color.WHITE,true); c.addView(v);
+        c.addView(ProductUi.text(this,label,12,ProductUi.MUTED,false));
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1f); p.setMargins(ProductUi.dp(this,3),0,ProductUi.dp(this,3),0); row.addView(c,p);
+        return v;
     }
 
-    @Override protected void onResume() { super.onResume(); refreshAll(); }
-
-    private void refreshAll() {
-        boolean enabled = isAccessibilityEnabled();
-        driverState.setText(enabled ? "● DRIVER SAMSUNG · ATIVO" : "○ DRIVER SAMSUNG · DESLIGADO");
-        driverState.setTextColor(enabled ? Color.rgb(106,235,183) : Color.rgb(255,210,120));
-        refreshModelState();
-        refreshMode();
-    }
-
-    private void refreshMode() {
-        String mode = control.getString("mode", "AUTO");
-        String label = "ASSISTED".equals(mode) ? "ASSISTIDO" : mode;
-        modeState.setText("MODO · " + label);
-    }
-
-    private void setMode(String mode) {
-        control.edit().putString("mode", mode).apply();
-        refreshMode();
-    }
-
-    private void refreshModelState() {
-        boolean installed = LocalQwenManager.isInstalled(this);
-        if (installed) {
-            modelState.setText("● " + LocalQwenManager.MODEL_LABEL + " · " + LocalQwenManager.installedSizeMb(this) + " MB");
-            modelState.setTextColor(Color.rgb(106,235,183));
-            if (installBrain != null) installBrain.setText("Reinstalar cérebro local");
-        } else {
-            modelState.setText("○ Cérebro local ainda não instalado");
-            modelState.setTextColor(Color.rgb(255,210,120));
-        }
-    }
-
-    private void installLocalBrain() {
-        installBrain.setEnabled(false);
-        testBrain.setEnabled(false);
-        aiState.setText("◌ A instalar cérebro local…");
-        LocalQwenManager.installAsync(this, new LocalQwenManager.DownloadCallback() {
-            @Override public void onProgress(int percent, long downloadedMb, long totalMb) {
-                runOnUiThread(() -> aiState.setText("↓ MODELO · " + (percent >= 0 ? percent + "%" : downloadedMb + " MB")));
+    private void loadProfile() {
+        RebornAdminClient.call(this,"me",new JSONObject(),new RebornAdminClient.Callback(){
+            @Override public void onSuccess(JSONObject data){
+                JSONObject p=data.optJSONObject("profile"); if(p==null)return;
+                String name=p.optString("full_name",p.optString("email","Utilizador"));
+                String role=p.optString("role","");
+                boolean superAdmin=p.optBoolean("is_super_admin",false);
+                profileLine.setText("● " + name + " · " + (superAdmin?"SUPER ADMIN":role.toUpperCase()));
+                adminTools.setVisibility(superAdmin || "admin".equals(role) ? View.VISIBLE : View.GONE);
             }
-            @Override public void onComplete(String path) {
-                runOnUiThread(() -> { installBrain.setEnabled(true); testBrain.setEnabled(true); refreshModelState(); testAi(); });
-            }
-            @Override public void onError(String message) {
-                runOnUiThread(() -> { installBrain.setEnabled(true); testBrain.setEnabled(true); aiState.setText("○ IA · falha: " + message); aiState.setTextColor(Color.rgb(255,125,125)); });
-            }
+            @Override public void onError(String message){ profileLine.setText("○ Sessão SD Dialer indisponível"); }
         });
     }
 
-    private void testAi() {
-        if (aiState == null) return;
-        aiState.setText("◌ IA LOCAL · A TESTAR");
-        aiState.setTextColor(Color.rgb(255,210,120));
-        Executors.newSingleThreadExecutor().submit(() -> {
-            SofiaAiHealth.Result r = SofiaAiHealth.check(this);
-            runOnUiThread(() -> {
-                aiState.setText(r.online ? "● IA LOCAL · ONLINE · " + r.latencyMs + " ms" : "○ IA LOCAL · OFFLINE");
-                aiState.setTextColor(r.online ? Color.rgb(106,235,183) : Color.rgb(255,125,125));
-            });
+    private void loadDashboard() {
+        if(callsToday==null)return;
+        RebornAdminClient.call(this,"dashboard",new JSONObject(),new RebornAdminClient.Callback(){
+            @Override public void onSuccess(JSONObject data){
+                JSONObject m=data.optJSONObject("metrics"); if(m==null)return;
+                callsToday.setText(String.valueOf(m.optInt("calls_today",0)));
+                salesToday.setText(String.valueOf(m.optInt("sales_today",0)));
+                leadsTotal.setText(String.valueOf(m.optInt("leads",0)));
+                agentsActive.setText(String.valueOf(m.optInt("agents_active",0)));
+            }
+            @Override public void onError(String message){}
         });
     }
 
-    private boolean isAccessibilityEnabled() {
-        String enabled = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-        return enabled != null && enabled.toLowerCase().contains(getPackageName().toLowerCase());
-    }
-
-    private TextView section(String s) {
-        TextView v = text(s, 12, Color.rgb(140,151,190), true);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1,-2);
-        p.topMargin = dp(24); p.bottomMargin = dp(8); v.setLayoutParams(p); return v;
-    }
-    private TextView text(String s, int sp, int color, boolean bold) {
-        TextView v = new TextView(this); v.setText(s); v.setTextSize(sp); v.setTextColor(color); v.setLineSpacing(0,1.12f);
-        if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v;
-    }
-    private Button primaryButton(String label) {
-        Button b = button(label); b.setTextSize(15); b.setTextColor(Color.rgb(5,15,17)); b.setBackgroundColor(Color.rgb(106,235,183)); return b;
-    }
-    private Button button(String label) { Button b = new Button(this); b.setText(label); b.setTextSize(14); b.setAllCaps(false); b.setGravity(Gravity.CENTER); return b; }
-    private Button smallButton(String label) { Button b = button(label); b.setTextSize(11); return b; }
-    private LinearLayout.LayoutParams weight() { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(48), 1f); p.setMargins(dp(2),0,dp(2),0); return p; }
-    private LinearLayout.LayoutParams primaryParams() { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(62)); p.topMargin = dp(6); return p; }
-    private LinearLayout.LayoutParams buttonParams() { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(54)); p.topMargin = dp(8); return p; }
-    private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
+    private void openRecords(String mode){ Intent i=new Intent(this,RecordsActivity.class); i.putExtra("mode",mode); startActivity(i); }
 }
