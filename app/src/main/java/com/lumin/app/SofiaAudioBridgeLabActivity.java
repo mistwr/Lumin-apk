@@ -20,10 +20,7 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import java.util.Locale;
 
-/**
- * Diagnostic probe only. It never roots the phone and never attempts privileged VOICE_CALL capture.
- * It measures which public Android audio paths remain available while a Samsung call/Text Call is active.
- */
+/** Diagnostic probe for public, non-root Android audio paths. */
 public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
     private static final int REQ_MIC = 6401;
     private TextView logView;
@@ -43,8 +40,7 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
         root.setPadding(dp(18), dp(24), dp(18), dp(32));
         scroll.addView(root);
 
-        TextView title = text("AUDIO BRIDGE LAB · 60.4", 25, Color.WHITE, true);
-        root.addView(title);
+        root.addView(text("AUDIO BRIDGE LAB · 60.5", 25, Color.WHITE, true));
         TextView sub = text("Teste sem root: MIC + VOICE_COMMUNICATION + rota de reprodução de chamada", 13, Color.rgb(145,157,191), false);
         sub.setPadding(0, dp(6), 0, dp(18));
         root.addView(sub);
@@ -63,7 +59,7 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
         tp.topMargin = dp(8);
         root.addView(tone, tp);
 
-        logView = text("Pronto. Idealmente corre este teste durante uma chamada Samsung Text Call e depois fora da chamada para comparar.\n", 12, Color.rgb(207,216,240), false);
+        logView = text("Pronto. Corre durante a chamada e depois fora dela para comparar.\n", 12, Color.rgb(207,216,240), false);
         logView.setPadding(0, dp(18), 0, 0);
         logView.setGravity(Gravity.START);
         root.addView(logView);
@@ -88,7 +84,7 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
                 probeSource("MIC", MediaRecorder.AudioSource.MIC);
                 probeSource("VOICE_COMMUNICATION", MediaRecorder.AudioSource.VOICE_COMMUNICATION);
                 append("---");
-                append("Teste concluído. RMS > 0 indica que o source entregou PCM público à app.");
+                append("RMS abaixo de ~20 e peak de poucos pontos é silêncio/ruído digital, não voz útil.");
             } finally {
                 running = false;
             }
@@ -99,18 +95,14 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= 23) {
             AudioDeviceInfo[] devices = am.getDevices(AudioManager.GET_DEVICES_ALL);
             append("Dispositivos áudio: " + devices.length);
-            for (AudioDeviceInfo d : devices) {
-                append(" • " + typeName(d.getType()) + " in=" + d.isSource() + " out=" + d.isSink() + " id=" + d.getId());
-            }
+            for (AudioDeviceInfo d : devices) append(" • " + typeName(d.getType()) + " in=" + d.isSource() + " out=" + d.isSink() + " id=" + d.getId());
         }
         if (Build.VERSION.SDK_INT >= 31) {
             try {
                 append("Communication devices disponíveis: " + am.getAvailableCommunicationDevices().size());
                 AudioDeviceInfo selected = am.getCommunicationDevice();
                 append("Communication device atual: " + (selected == null ? "null" : typeName(selected.getType()) + " #" + selected.getId()));
-            } catch (Throwable t) {
-                append("CommunicationDevice API: " + t.getClass().getSimpleName());
-            }
+            } catch (Throwable t) { append("CommunicationDevice API: " + t.getClass().getSimpleName()); }
         }
     }
 
@@ -125,28 +117,25 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
             if (rec.getState() != AudioRecord.STATE_INITIALIZED) return;
             rec.startRecording();
             short[] buf = new short[Math.max(320, size / 2)];
-            long sumSq = 0L;
-            long count = 0L;
+            long sumSq = 0L, count = 0L;
             int peak = 0;
             long end = System.currentTimeMillis() + 1100L;
             while (System.currentTimeMillis() < end) {
                 int n = rec.read(buf, 0, buf.length);
                 if (n <= 0) continue;
                 for (int i = 0; i < n; i++) {
-                    int v = buf[i];
-                    int a = Math.abs(v);
+                    int v = buf[i], a = Math.abs(v);
                     if (a > peak) peak = a;
                     sumSq += (long) v * v;
                     count++;
                 }
             }
             double rms = count == 0 ? 0 : Math.sqrt(sumSq / (double) count);
-            append(String.format(Locale.US, "%s RMS=%.1f peak=%d frames=%d", label, rms, peak, count));
-        } catch (SecurityException se) {
-            append(label + " BLOQUEADO: SecurityException");
-        } catch (Throwable t) {
-            append(label + " ERRO: " + t.getClass().getSimpleName() + " " + safe(t.getMessage()));
-        } finally {
+            String verdict = (rms >= 20.0 || peak >= 100) ? "PCM ÚTIL/POSSÍVEL" : "SILÊNCIO/BLOQUEADO";
+            append(String.format(Locale.US, "%s RMS=%.1f peak=%d frames=%d → %s", label, rms, peak, count, verdict));
+        } catch (SecurityException se) { append(label + " BLOQUEADO: SecurityException"); }
+        catch (Throwable t) { append(label + " ERRO: " + t.getClass().getSimpleName() + " " + safe(t.getMessage())); }
+        finally {
             if (rec != null) {
                 try { rec.stop(); } catch (Throwable ignored) {}
                 try { rec.release(); } catch (Throwable ignored) {}
@@ -155,8 +144,7 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
     }
 
     private void playVoiceCommunicationTone() {
-        final int sr = 16000;
-        final int ms = 650;
+        final int sr = 16000, ms = 650;
         int samples = sr * ms / 1000;
         short[] pcm = new short[samples];
         for (int i = 0; i < samples; i++) {
@@ -165,26 +153,16 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
         }
         AudioTrack track = null;
         try {
-            AudioAttributes attrs = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build();
-            AudioFormat fmt = new AudioFormat.Builder()
-                    .setSampleRate(sr)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build();
+            AudioAttributes attrs = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
+            AudioFormat fmt = new AudioFormat.Builder().setSampleRate(sr).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build();
             track = new AudioTrack(attrs, fmt, pcm.length * 2, AudioTrack.MODE_STATIC, AudioManager.AUDIO_SESSION_ID_GENERATE);
             int wrote = track.write(pcm, 0, pcm.length);
             append("AudioTrack VOICE_COMMUNICATION state=" + track.getState() + " wrote=" + wrote);
             track.play();
             Thread.sleep(ms + 150L);
             append("Tom terminado. Confirma no outro telefone se foi audível na chamada.");
-        } catch (Throwable t) {
-            append("AudioTrack ERRO: " + t.getClass().getSimpleName() + " " + safe(t.getMessage()));
-        } finally {
-            if (track != null) try { track.release(); } catch (Throwable ignored) {}
-        }
+        } catch (Throwable t) { append("AudioTrack ERRO: " + t.getClass().getSimpleName() + " " + safe(t.getMessage())); }
+        finally { if (track != null) try { track.release(); } catch (Throwable ignored) {} }
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
@@ -194,10 +172,7 @@ public class SofiaAudioBridgeLabActivity extends AppCompatActivity {
 
     private void append(String s) { runOnUiThread(() -> logView.append(s + "\n")); }
     private String safe(String s) { return s == null ? "" : s.replace('\n', ' '); }
-    private TextView text(String s, int sp, int color, boolean bold) {
-        TextView v = new TextView(this); v.setText(s); v.setTextSize(sp); v.setTextColor(color);
-        if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v;
-    }
+    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(sp); v.setTextColor(color); if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD); return v; }
     private String typeName(int t) {
         switch (t) {
             case AudioDeviceInfo.TYPE_BUILTIN_EARPIECE: return "EARPIECE";
