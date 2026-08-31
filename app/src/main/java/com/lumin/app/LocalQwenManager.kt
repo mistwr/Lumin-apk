@@ -21,6 +21,7 @@ object LocalQwenManager {
 
     private val modelMutex = Mutex()
     @Volatile private var loadedModel: LlamaModel? = null
+    @Volatile private var warming = false
     @Volatile var lastTokensPerSecond: Float = 0f
         private set
 
@@ -45,6 +46,23 @@ object LocalQwenManager {
 
     @JvmStatic
     fun installedSizeMb(context: Context): Long = modelFile(context).length() / (1024L * 1024L)
+
+    @JvmStatic
+    fun warmUpAsync(context: Context) {
+        val app = context.applicationContext
+        if (!isInstalled(app)) return
+        loadedModel?.let { if (it.isLoaded) return }
+        if (warming) return
+        warming = true
+        thread(name = "sofia-qwen-warmup", isDaemon = true) {
+            try {
+                runBlocking { ensureLoaded(app) }
+            } catch (_: Throwable) {
+            } finally {
+                warming = false
+            }
+        }
+    }
 
     @JvmStatic
     fun deleteModel(context: Context) {
@@ -75,7 +93,7 @@ object LocalQwenManager {
                     readTimeout = 30_000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
-                    setRequestProperty("User-Agent", "SOFIA-Android/5.8.1")
+                    setRequestProperty("User-Agent", "SOFIA-Android/6.0.8")
                 }
                 connection.connect()
                 val code = connection.responseCode
