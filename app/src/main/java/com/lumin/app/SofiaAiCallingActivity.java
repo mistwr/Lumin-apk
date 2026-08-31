@@ -35,6 +35,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         loadProfile();
         LocalQwenManager.warmUpAsync(this);
         SdDialerBrainClient.refreshAsync(this);
+        RebornEnergyDataClient.refreshAsync(this);
     }
 
     private View buildUi() {
@@ -48,13 +49,13 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
         root.addView(text("REBORN AI", 12, Color.rgb(106,235,183), true));
         root.addView(text("AI CALLING", 32, Color.WHITE, true));
-        TextView sub = text("MyPoupar Agent Hub · SD Dialer + Samsung Text Call + IA local", 14, Color.rgb(126,145,205), true);
+        TextView sub = text("MyPoupar Agent Hub · SD Dialer + Simulador Energia + Samsung Text Call", 14, Color.rgb(126,145,205), true);
         sub.setPadding(0, dp(4), 0, dp(18));
         root.addView(sub);
 
         LinearLayout hero = card();
         hero.addView(text("● REBORN BRAIN ONLINE", 13, Color.rgb(106,235,183), true));
-        hero.addView(text("Cada agente tem objetivo, tom, guião e abertura próprios. O cérebro comercial sincroniza com o SD Dialer.", 15, Color.rgb(223,229,246), false));
+        hero.addView(text("Agentes, guiões do SD Dialer e dados energéticos MyPoupar trabalham no mesmo fluxo.", 15, Color.rgb(223,229,246), false));
         root.addView(hero);
 
         root.addView(section("CLIENTE"));
@@ -101,15 +102,15 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, dp(64)); cp.topMargin=dp(16);
         root.addView(call,cp);
 
-        Button sync = secondary("Sincronizar SD Dialer agora");
-        sync.setOnClickListener(v -> SdDialerBrainClient.refreshAsync(this));
+        Button sync = secondary("Sincronizar SD Dialer + Energia");
+        sync.setOnClickListener(v -> { SdDialerBrainClient.refreshAsync(this); RebornEnergyDataClient.refreshAsync(this); });
         root.addView(sync,buttonParams());
 
         Button save = secondary("Guardar alterações deste agente");
         save.setOnClickListener(v -> saveProfile());
         root.addView(save,buttonParams());
 
-        TextView note = text("Build 61.0 · perfis completos por agente + fecho automático da chamada para o SD Dialer", 12, Color.rgb(106,235,183), true);
+        TextView note = text("Build 61.1 · SD Dialer + fonte energética do simulador MyPoupar", 12, Color.rgb(106,235,183), true);
         note.setPadding(0,dp(18),0,0); root.addView(note);
 
         TextView credit = text("Criado pela MyPoupar · Desenvolvido pelo CEO da MyPoupar com apoio da Soluções Diferentes · Feito por REBORN AI", 12, Color.rgb(145,157,191), false);
@@ -124,7 +125,6 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         int index = RebornAgentCatalog.indexFor(savedId);
         agentSelector.setSelection(index, false);
         RebornAgentCatalog.AgentProfile base = RebornAgentCatalog.at(index);
-
         agent.setText(control.getString("agent_name",base.name));
         brand.setText(control.getString("agent_brand",base.brand));
         objective.setText(control.getString("agent_objective",base.objective));
@@ -137,37 +137,18 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
     private void applyCatalogProfile(int position, boolean persist) {
         RebornAgentCatalog.AgentProfile p = RebornAgentCatalog.at(position);
-        agent.setText(p.name);
-        brand.setText(p.brand);
-        objective.setText(p.objective);
-        script.setText(p.script);
-        opening.setText(p.opening);
+        agent.setText(p.name); brand.setText(p.brand); objective.setText(p.objective); script.setText(p.script); opening.setText(p.opening);
         SofiaAgentProfile.configure(p.name,p.brand,p.tone,p.objective,p.script,p.opening);
-        if (persist) {
-            control.edit()
-                    .putString("agent_profile_id",p.id)
-                    .putString("agent_name",p.name)
-                    .putString("agent_brand",p.brand)
-                    .putString("agent_objective",p.objective)
-                    .putString("active_script",p.script)
-                    .putString("agent_opening",p.opening)
-                    .apply();
-        }
+        if (persist) control.edit().putString("agent_profile_id",p.id).putString("agent_name",p.name).putString("agent_brand",p.brand)
+                .putString("agent_objective",p.objective).putString("active_script",p.script).putString("agent_opening",p.opening).apply();
     }
 
     private void saveProfile() {
         RebornAgentCatalog.AgentProfile selected = RebornAgentCatalog.at(agentSelector.getSelectedItemPosition());
-        control.edit()
-                .putString("dial_phone",val(phone))
-                .putString("agent_profile_id",selected.id)
-                .putString("agent_name",val(agent))
-                .putString("agent_brand",val(brand))
-                .putString("agent_objective",val(objective))
-                .putString("active_script",val(script))
-                .putString("agent_opening",val(opening))
-                .putString("sd_company_id",SdDialerBrainClient.DEFAULT_COMPANY_ID)
-                .putBoolean("auto_text_call",autoTextCall.isChecked())
-                .putString("mode","AUTO").apply();
+        control.edit().putString("dial_phone",val(phone)).putString("agent_profile_id",selected.id).putString("agent_name",val(agent))
+                .putString("agent_brand",val(brand)).putString("agent_objective",val(objective)).putString("active_script",val(script))
+                .putString("agent_opening",val(opening)).putString("sd_company_id",SdDialerBrainClient.DEFAULT_COMPANY_ID)
+                .putBoolean("auto_text_call",autoTextCall.isChecked()).putString("mode","AUTO").apply();
         applyRuntimeProfile();
     }
 
@@ -177,23 +158,16 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
     }
 
     private void prepareAndCall() {
-        saveProfile();
-        LocalQwenManager.warmUpAsync(this);
-        SdDialerBrainClient.refreshAsync(this);
+        saveProfile(); LocalQwenManager.warmUpAsync(this); SdDialerBrainClient.refreshAsync(this); RebornEnergyDataClient.refreshAsync(this);
         String number=val(phone).replace(" ","");
         if(number.isEmpty()){phone.setError("Introduz um número");return;}
-        control.edit()
-                .putString("dial_phone",number)
-                .putLong("call_started_at",System.currentTimeMillis())
-                .putBoolean("call_final_synced",false)
-                .apply();
+        control.edit().putString("dial_phone",number).putLong("call_started_at",System.currentTimeMillis()).putBoolean("call_final_synced",false).apply();
         if(checkSelfPermission(Manifest.permission.CALL_PHONE)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.CALL_PHONE},REQ_CALL);return;}
         startCall(number);
     }
 
     private void startCall(String number) {
-        LocalQwenManager.warmUpAsync(this);
-        SdDialerBrainClient.refreshAsync(this);
+        LocalQwenManager.warmUpAsync(this); SdDialerBrainClient.refreshAsync(this); RebornEnergyDataClient.refreshAsync(this);
         control.edit().putLong("auto_text_call_armed_at",System.currentTimeMillis()).apply();
         startActivity(new Intent(Intent.ACTION_CALL, Uri.parse("tel:"+Uri.encode(number))));
     }
