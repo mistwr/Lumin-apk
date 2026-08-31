@@ -31,7 +31,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private static final long POLL_MS = 160L;
     private static final long TURN_SILENCE_MS = 520L;
-    private static final long REPLY_WATCHDOG_MS = 950L;
+    // 950 ms was stealing most turns from Qwen and forcing the same fallback repeatedly.
+    private static final long REPLY_WATCHDOG_MS = 3200L;
     private static final long SEND_DEDUP_MS = 10000L;
 
     private final SofiaMemory memory = new SofiaMemory();
@@ -93,7 +94,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         IntentFilter f = new IntentFilter(ACTION_SEND_REPLY);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, Context.RECEIVER_NOT_EXPORTED); else registerReceiver(receiver, f);
         try { overlay = new SofiaCallOverlay(this); overlay.start(); } catch (Throwable ignored) {}
-        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER 60.7 FAST TURN");
+        log("service", "ATIVO · SAMSUNG TRANSCRIPT DRIVER · NATURAL TURN 6.2.2");
         main.removeCallbacks(watcher);
         main.removeCallbacks(finalizeTurn);
         main.post(watcher);
@@ -160,7 +161,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (activeTurnId != turnId || !claimReply(turnId)) return;
             busy = false;
             String fb = contextualFallback(customerForFallback);
-            log("path", "FAST_WATCHDOG");
+            log("path", "LLM_TIMEOUT_FALLBACK");
             log("llm_ms", String.valueOf(System.currentTimeMillis() - started));
             deliverReply(fb, false, "QUALIFICATION", mode);
         }, REPLY_WATCHDOG_MS);
@@ -201,10 +202,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private String contextualFallback(String customer) {
         String n = normalize(customer);
-        if (n.contains("luz") || n.contains("energia") || n.contains("eletric")) return "Sensivelmente quanto paga por mês de eletricidade?";
-        if (n.contains("telecom") || n.contains("internet") || n.contains("tv") || n.contains("fibra")) return "Atualmente está com que operador?";
-        if (memory.has("operator") && !memory.has("monthly_price")) return "Sensivelmente quanto paga por mês pelo pacote?";
-        return "Diga-me só o que gostaria de melhorar no serviço atual.";
+        if (n.contains("luz") || n.contains("energia") || n.contains("eletric")) return "Percebi. Para lhe responder com rigor, sensivelmente quanto paga por mês de eletricidade?";
+        if (n.contains("telecom") || n.contains("internet") || n.contains("tv") || n.contains("fibra")) return "Percebi. Para comparar corretamente, atualmente está com que operador?";
+        if (memory.has("operator") && !memory.has("monthly_price")) return "Certo. Sensivelmente quanto paga por mês pelo pacote atual?";
+        return "Percebi. Pode explicar-me um pouco melhor o que pretende saber ou melhorar?";
     }
 
     private String sanitizeReply(String reply) {
@@ -214,11 +215,13 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (l.contains("system prompt") || l.contains("factos conhecidos") || l.contains("cliente disse:") ||
                 l.contains("consultora mypoupar") || l.contains("especializada em telecom") ||
                 l.contains("português de portugal") || l.contains("portugues de portugal") ||
-                l.contains("responde apenas") || l.contains("script ativo:") || l.startsWith("agente:")) return "";
+                l.contains("responde apenas") || l.contains("script ativo:") || l.startsWith("agente:") ||
+                l.contains("qualificar o cliente") || l.contains("objetivo:") || l.contains("fase atual=") ||
+                l.contains("aqui está a resposta final") || l.startsWith("sofia:") || l.startsWith("assistente:")) return "";
         if (r.startsWith("\"") && r.endsWith("\"") && r.length() > 1) r = r.substring(1, r.length() - 1).trim();
         int half = r.length() / 2;
         if (r.length() >= 20 && r.length() % 2 == 0 && r.substring(0, half).equals(r.substring(half))) r = r.substring(0, half).trim();
-        if (r.length() > 180) r = r.substring(0, 180).trim();
+        if (r.length() > 260) r = r.substring(0, 260).trim();
         return r;
     }
 
@@ -246,7 +249,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
             boolean set = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
             log("set_text", String.valueOf(set));
 
-            // Critical 60.7 fix: never paste after a successful SET_TEXT.
             if (!set) {
                 try {
                     ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -324,7 +326,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (isSamsungChrome(l) || isCallState(s) || looksLikePhoneNumber(s)) continue;
             if (!nt.bounds.isEmpty()) {
                 if (nt.bounds.bottom >= editRect.top - 8) continue;
-                // Samsung customer transcript is left aligned; Sofia/Text Call replies are on the right.
                 if (nt.bounds.left > (int)(screenW * 0.24f)) continue;
                 if (nt.bounds.bottom > bestBottom) { best = nt; bestBottom = nt.bounds.bottom; }
             }
@@ -392,6 +393,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private boolean isSamsungChrome(String l) {
         return l.contains("escrever resposta") || l.contains("chamada de texto") || l.contains("assistente de chamada") ||
+                l.contains("adicionar chamada") || l.contains("add call") ||
                 l.contains("urgente") || l.contains("ligar-lhe mais tarde") || l.equals("repetir") || l.equals("enviar") ||
                 l.contains("estou a utilizar um assistente de voz") || l.contains("converter a sua voz em texto") ||
                 l.contains("mantenha-se em linha") || l.contains("desligar") || l.contains("altifalante") || l.contains("teclado") ||
