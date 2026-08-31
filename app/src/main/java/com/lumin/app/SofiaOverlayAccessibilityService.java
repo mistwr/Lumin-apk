@@ -1,8 +1,11 @@
 package com.lumin.app;
 
 import android.accessibilityservice.AccessibilityButtonController;
+import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Path;
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -16,6 +19,8 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
     private SharedPreferences diag;
     private final Handler main = new Handler(Looper.getMainLooper());
     private long lastAutoTapAt = 0L;
+    private long lastForceSendAt = 0L;
+    private String lastForcedText = "";
     private boolean openingScheduled = false;
 
     @Override public void onServiceConnected() {
@@ -46,6 +51,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         if (event == null || event.getPackageName() == null) return;
         if (!"com.samsung.android.incallui".contentEquals(event.getPackageName())) return;
         maybeAutoEnterTextCall();
+        maybeForceSendGeneratedReply();
     }
 
     private void maybeAutoEnterTextCall() {
@@ -64,16 +70,15 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         }
 
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || root.getPackageName() == null ||
-                !"com.samsung.android.incallui".contentEquals(root.getPackageName())) return;
+        if (!isSamsung(root)) return;
 
-        if (hasEditable(root)) {
+        if (findEditable(root) != null) {
             if (!openingScheduled) {
                 openingScheduled = true;
                 control.edit().remove("auto_text_call_armed_at").apply();
                 diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_AGENDADA").apply();
-                // Give Samsung's mandatory Text Call disclosure time to play first.
-                main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, 2600L);
+                // Let Samsung finish its own Text Call introduction before our configured opening.
+                main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, 2800L);
             }
             return;
         }
@@ -106,10 +111,68 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         diag.edit().putString("auto_text_call", "A_AGUARDAR_BOTAO").apply();
     }
 
+    /**
+     * Samsung sometimes exposes the editable composer but not the green send button.
+     * The base driver first tries semantic ACTION_CLICK / IME enter. If the generated
+     * reply is still sitting in the composer, this fallback taps the control immediately
+     * to the right of the composer. It only runs in AUTO mode and only for text that
+     * SOFIA itself generated, never arbitrary user text.
+     */
+    private void maybeForceSendGeneratedReply() {
+        if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
+        if (diag == null) diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
+        if (!"AUTO".equals(control.getString("mode", "AUTO"))) return;
+
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (!isSamsung(root)) return;
+        AccessibilityNodeInfo edit = findEditable(root);
+        if (edit == null || edit.getText() == null) return;
+
+        String current = edit.getText().toString().trim();
+        if (current.isEmpty() || current.length() < 2) return;
+        String suggested = control.getString("suggested_reply", "").trim();
+        String generated = diag.getString("last_reply", "").trim();
+        if (!same(current, suggested) && !same(current, generated)) return;
+
+        long now = System.currentTimeMillis();
+        if (same(current, lastForcedText) && now - lastForceSendAt < 1200L) return;
+
+        Rect editRect = new Rect();
+        Rect rootRect = new Rect();
+        edit.getBoundsInScreen(editRect);
+        root.getBoundsInScreen(rootRect);
+        if (editRect.isEmpty() || rootRect.isEmpty()) return;
+
+        // First retry the keyboard's enter/send action when Samsung exposes it.
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                boolean ime = edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+                if (ime) {
+                    lastForcedText = current;
+                    lastForceSendAt = now;
+                    diag.edit().putString("force_send", "IME_ENTER").apply();
+                    main.postDelayed(this::maybeForceSendGeneratedReply, 260L);
+                    return;
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        float density = getResources().getDisplayMetrics().density;
+        float x = Math.min(rootRect.right - 18f * density,
+                Math.max(editRect.right + 24f * density, rootRect.right - 48f * density));
+        float y = editRect.centerY();
+        Path p = new Path();
+        p.moveTo(x, y);
+        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(p, 0, 55);
+        boolean ok = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
+        lastForcedText = current;
+        lastForceSendAt = now;
+        diag.edit().putString("force_send", ok ? "GESTURE_SEND" : "GESTURE_FAILED").apply();
+    }
+
     private void sendConfiguredOpeningIfStillInTextCall() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || root.getPackageName() == null ||
-                !"com.samsung.android.incallui".contentEquals(root.getPackageName()) || !hasEditable(root)) {
+        if (!isSamsung(root) || findEditable(root) == null) {
             diag.edit().putString("auto_text_call", "ABERTURA_CANCELADA · TEXT_CALL_FECHADO").apply();
             openingScheduled = false;
             return;
@@ -121,6 +184,21 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         i.putExtra(SofiaAccessibilityService.EXTRA_REPLY, opening);
         sendBroadcast(i);
         diag.edit().putString("auto_text_call", "ABERTURA_ENVIADA").apply();
+        main.postDelayed(this::maybeForceSendGeneratedReply, 300L);
+    }
+
+    private boolean isSamsung(AccessibilityNodeInfo root) {
+        return root != null && root.getPackageName() != null &&
+                "com.samsung.android.incallui".contentEquals(root.getPackageName());
+    }
+
+    private boolean same(String a, String b) {
+        if (a == null || b == null || a.trim().isEmpty() || b.trim().isEmpty()) return false;
+        return normalize(a).equals(normalize(b));
+    }
+
+    private String normalize(String s) {
+        return s.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]+", " ").trim().replaceAll("\\s+", " ");
     }
 
     private AccessibilityNodeInfo findAction(AccessibilityNodeInfo node, String[] needles) {
@@ -137,13 +215,14 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         return null;
     }
 
-    private boolean hasEditable(AccessibilityNodeInfo node) {
-        if (node == null) return false;
-        if (node.isEditable()) return true;
+    private AccessibilityNodeInfo findEditable(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        if (node.isEditable()) return node;
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (hasEditable(node.getChild(i))) return true;
+            AccessibilityNodeInfo e = findEditable(node.getChild(i));
+            if (e != null) return e;
         }
-        return false;
+        return null;
     }
 
     private AccessibilityNodeInfo clickableSelfOrParent(AccessibilityNodeInfo node) {
