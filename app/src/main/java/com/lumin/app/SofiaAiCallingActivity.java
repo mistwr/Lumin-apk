@@ -29,6 +29,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         control = getSharedPreferences("sofia_control", MODE_PRIVATE);
         setContentView(buildUi());
         loadProfile();
+        LocalQwenManager.warmUpAsync(this);
     }
 
     private View buildUi() {
@@ -89,7 +90,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         audioLab.setOnClickListener(v -> startActivity(new Intent(this, SofiaAudioBridgeLabActivity.class)));
         root.addView(audioLab, buttonParams());
 
-        TextView note = text("Build 60.4: resposta AUTO reforçada com fallback de envio no Samsung Text Call. O Audio Bridge Lab testa as rotas públicas MIC/VOICE_COMMUNICATION sem root.", 12, Color.rgb(145,157,191), false);
+        TextView note = text("Build 60.8: cérebro local pré-aquecido antes da chamada e código postal com prioridade.", 12, Color.rgb(145,157,191), false);
         note.setPadding(0, dp(18), 0, 0);
         root.addView(note);
         return scroll;
@@ -126,6 +127,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
     private void prepareAndCall() {
         saveProfile();
+        LocalQwenManager.warmUpAsync(this);
         String number = val(phone).replace(" ", "");
         if (number.isEmpty()) { phone.setError("Introduz um número"); return; }
         if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
@@ -136,6 +138,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
     }
 
     private void startCall(String number) {
+        LocalQwenManager.warmUpAsync(this);
         control.edit().putLong("auto_text_call_armed_at", System.currentTimeMillis()).apply();
         Intent i = new Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode(number)));
         startActivity(i);
