@@ -20,10 +20,10 @@ import java.util.Locale;
 
 /** Samsung bridge for REBORN AI Calling -> Samsung Text Call. */
 public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService {
-    // Queue REBORN almost immediately. If Samsung is still playing its mandatory
-    // disclosure, the pending-reply watchdog waits for the composer to unlock.
-    private static final long OPENING_DELAY_MS = 350L;
-    private static final long PENDING_REPLY_POLL_MS = 240L;
+    // Prepare REBORN immediately. Samsung's mandatory disclosure is never suppressed;
+    // the pending-reply watchdog injects the opening at the first instant the composer unlocks.
+    private static final long OPENING_DELAY_MS = 0L;
+    private static final long PENDING_REPLY_POLL_MS = 120L;
 
     private SharedPreferences control;
     private SharedPreferences diag;
@@ -146,8 +146,12 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
             if (!openingScheduled) {
                 openingScheduled = true;
                 control.edit().remove("auto_text_call_armed_at").apply();
-                diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_REBORN_AGENDADA").apply();
-                main.postDelayed(this::sendConfiguredOpeningIfStillInTextCall, OPENING_DELAY_MS);
+                String opening = control.getString("agent_opening", SofiaAgentProfile.opening()).trim();
+                if (!opening.isEmpty()) control.edit().putString("suggested_reply", opening).apply();
+                diag.edit().putString("auto_text_call", "TEXT_CALL_ATIVO · ABERTURA_REBORN_PRONTA").apply();
+                main.post(this::sendConfiguredOpeningIfStillInTextCall);
+                main.removeCallbacks(pendingReplyWatchdog);
+                main.post(pendingReplyWatchdog);
             }
             return;
         }
@@ -180,11 +184,6 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         diag.edit().putString("auto_text_call", "A_AGUARDAR_BOTAO").apply();
     }
 
-    /**
-     * If the base driver generated a reply while Samsung still had its composer disabled
-     * (normally during the mandatory disclosure), keep the reply pending and inject it
-     * as soon as the editable field becomes enabled. This avoids losing the first turn.
-     */
     private void maybeRecoverPendingReply() {
         if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
         if (diag == null) diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
@@ -215,7 +214,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, pending);
         boolean ok = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
         diag.edit().putString("composer_watchdog", ok ? "RECUPERADO · SET_TEXT" : "SET_TEXT_FALHOU · NOVA_TENTATIVA").apply();
-        if (ok) main.postDelayed(this::maybeForceSendGeneratedReply, 80L);
+        if (ok) main.postDelayed(this::maybeForceSendGeneratedReply, 40L);
     }
 
     private void maybeForceSendGeneratedReply() {
@@ -250,7 +249,7 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
                     lastForcedText = current;
                     lastForceSendAt = now;
                     diag.edit().putString("force_send", "IME_ENTER").apply();
-                    main.postDelayed(this::maybeForceSendGeneratedReply, 260L);
+                    main.postDelayed(this::maybeForceSendGeneratedReply, 140L);
                     return;
                 }
             } catch (Throwable ignored) {}
@@ -272,23 +271,20 @@ public class SofiaOverlayAccessibilityService extends SofiaAccessibilityService 
     private void sendConfiguredOpeningIfStillInTextCall() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         AccessibilityNodeInfo edit = isSamsung(root) ? findEditable(root) : null;
-        if (edit == null) {
-            diag.edit().putString("auto_text_call", "ABERTURA_CANCELADA · TEXT_CALL_FECHADO").apply();
-            openingScheduled = false;
-            return;
-        }
         String opening = control.getString("agent_opening", SofiaAgentProfile.opening()).trim();
         if (opening.isEmpty()) return;
-
-        // Queue the opening immediately. The watchdog only injects it when Samsung's
-        // mandatory disclosure has finished and the composer is actually enabled.
         control.edit().putString("suggested_reply", opening).apply();
+
+        if (edit == null) {
+            diag.edit().putString("auto_text_call", "ABERTURA_EM_FILA · A_AGUARDAR_COMPOSITOR").apply();
+            main.removeCallbacks(pendingReplyWatchdog);
+            main.post(pendingReplyWatchdog);
+            return;
+        }
+
         if (edit.isEnabled()) {
-            Intent i = new Intent(SofiaAccessibilityService.ACTION_SEND_REPLY);
-            i.setPackage(getPackageName());
-            i.putExtra(SofiaAccessibilityService.EXTRA_REPLY, opening);
-            sendBroadcast(i);
-            diag.edit().putString("auto_text_call", "ABERTURA_REBORN_ENVIADA · " + OPENING_DELAY_MS + "ms").apply();
+            maybeRecoverPendingReply();
+            diag.edit().putString("auto_text_call", "ABERTURA_REBORN_IMEDIATA · 0ms").apply();
         } else {
             diag.edit().putString("auto_text_call", "ABERTURA_REBORN_EM_FILA · SAMSUNG_BLOQUEADO").apply();
             main.removeCallbacks(pendingReplyWatchdog);
