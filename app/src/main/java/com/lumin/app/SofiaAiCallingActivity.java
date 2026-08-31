@@ -33,9 +33,14 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         control = getSharedPreferences("sofia_control", MODE_PRIVATE);
         setContentView(buildUi());
         loadProfile();
+        refreshBrains();
+    }
+
+    private void refreshBrains() {
         LocalQwenManager.warmUpAsync(this);
         SdDialerBrainClient.refreshAsync(this);
         RebornEnergyDataClient.refreshAsync(this);
+        TelecomCampaignClient.refreshAsync(this);
     }
 
     private View buildUi() {
@@ -49,13 +54,13 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
         root.addView(text("REBORN AI", 12, Color.rgb(106,235,183), true));
         root.addView(text("AI CALLING", 32, Color.WHITE, true));
-        TextView sub = text("MyPoupar Agent Hub · SD Dialer + Simulador Energia + Samsung Text Call", 14, Color.rgb(126,145,205), true);
+        TextView sub = text("MyPoupar Agent Hub · SD Dialer + Campanhas + Energia + Samsung Text Call", 14, Color.rgb(126,145,205), true);
         sub.setPadding(0, dp(4), 0, dp(18));
         root.addView(sub);
 
         LinearLayout hero = card();
         hero.addView(text("● REBORN BRAIN ONLINE", 13, Color.rgb(106,235,183), true));
-        hero.addView(text("Agentes, guiões do SD Dialer e dados energéticos MyPoupar trabalham no mesmo fluxo.", 15, Color.rgb(223,229,246), false));
+        hero.addView(text("Agentes, SD Dialer, campanhas telecom MyPoupar e dados energéticos trabalham no mesmo fluxo.", 15, Color.rgb(223,229,246), false));
         root.addView(hero);
 
         root.addView(section("CLIENTE"));
@@ -102,15 +107,15 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, dp(64)); cp.topMargin=dp(16);
         root.addView(call,cp);
 
-        Button sync = secondary("Sincronizar SD Dialer + Energia");
-        sync.setOnClickListener(v -> { SdDialerBrainClient.refreshAsync(this); RebornEnergyDataClient.refreshAsync(this); });
+        Button sync = secondary("Sincronizar SD Dialer + MyPoupar");
+        sync.setOnClickListener(v -> refreshBrains());
         root.addView(sync,buttonParams());
 
         Button save = secondary("Guardar alterações deste agente");
         save.setOnClickListener(v -> saveProfile());
         root.addView(save,buttonParams());
 
-        TextView note = text("Build 61.1 · SD Dialer + fonte energética do simulador MyPoupar", 12, Color.rgb(106,235,183), true);
+        TextView note = text("Build 61.2 · campanhas telecom/PDF MyPoupar + SD Dialer + energia", 12, Color.rgb(106,235,183), true);
         note.setPadding(0,dp(18),0,0); root.addView(note);
 
         TextView credit = text("Criado pela MyPoupar · Desenvolvido pelo CEO da MyPoupar com apoio da Soluções Diferentes · Feito por REBORN AI", 12, Color.rgb(145,157,191), false);
@@ -158,7 +163,8 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
     }
 
     private void prepareAndCall() {
-        saveProfile(); LocalQwenManager.warmUpAsync(this); SdDialerBrainClient.refreshAsync(this); RebornEnergyDataClient.refreshAsync(this);
+        saveProfile();
+        refreshBrains();
         String number=val(phone).replace(" ","");
         if(number.isEmpty()){phone.setError("Introduz um número");return;}
         control.edit().putString("dial_phone",number).putLong("call_started_at",System.currentTimeMillis()).putBoolean("call_final_synced",false).apply();
@@ -167,7 +173,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
     }
 
     private void startCall(String number) {
-        LocalQwenManager.warmUpAsync(this); SdDialerBrainClient.refreshAsync(this); RebornEnergyDataClient.refreshAsync(this);
+        refreshBrains();
         control.edit().putLong("auto_text_call_armed_at",System.currentTimeMillis()).apply();
         startActivity(new Intent(Intent.ACTION_CALL, Uri.parse("tel:"+Uri.encode(number))));
     }
