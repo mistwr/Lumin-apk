@@ -11,8 +11,8 @@ android {
         applicationId "com.lumin.app"
         minSdk 26
         targetSdk 34
-        versionCode 616
-        versionName "6.1.6"
+        versionCode 617
+        versionName "6.1.7"
 
         buildConfigField "String", "SUPABASE_URL", '"' + (project.findProperty("SOFIA_SUPABASE_URL") ?: "") + '"'
         buildConfigField "String", "SUPABASE_ANON_KEY", '"' + (project.findProperty("SOFIA_SUPABASE_ANON_KEY") ?: "") + '"'
