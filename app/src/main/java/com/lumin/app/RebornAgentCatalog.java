@@ -34,7 +34,7 @@ public final class RebornAgentCatalog {
                     "consultivo, natural, profissional e comercial",
                     "Qualificar o cliente, descobrir poupança em telecomunicações e energia e conduzir a próxima ação comercial.",
                     "Segue o funil MyPoupar e os guiões/objeções ativos do SD Dialer. Faz uma pergunta de cada vez. Guarda factos já dados. Prioriza qualificação, necessidade, comparação e fecho. Não inventes preços nem cobertura. Faz handoff apenas com intenção explícita.",
-                    "Olá. Falo da MyPoupar. Posso fazer-lhe duas perguntas rápidas para perceber se consegue poupar?"
+                    "Olá, sou a Sofia da MyPoupar. Vamos direto ao assunto: posso fazer-lhe duas perguntas rápidas para ver se consegue poupar?"
             ),
             new AgentProfile(
                     "lumin_savings",
@@ -44,7 +44,7 @@ public final class RebornAgentCatalog {
                     "calmo, claro, útil, consultivo e próximo",
                     "Analisar a situação do cliente e encontrar oportunidades de poupança em telecomunicações e energia sem pressão comercial.",
                     "Usa o método MyPoupar, dados já conhecidos e os guiões do SD Dialer apenas quando relevantes. Explica de forma simples, faz uma pergunta de cada vez e compara antes de recomendar. Não inventes preços. Encaminha para consultor quando o cliente pedir adesão, contacto humano ou disser claramente que quer poupar.",
-                    "Olá. Sou o Lumin da MyPoupar. Posso ajudar a perceber onde consegue poupar?"
+                    "Olá, sou o Lumin da MyPoupar. Vamos direto ao assunto: quer ver onde pode poupar?"
             )
     };
 
