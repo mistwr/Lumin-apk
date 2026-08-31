@@ -8,16 +8,10 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
-/**
- * REBORN AI telecom campaign bridge.
- * Reads active telecom campaigns from the CRM Supabase and keeps a short local cache.
- * PDFs remain the source material in the CRM; this client only consumes structured
- * campaign metadata/summary fields suitable for live call prompts.
- */
+/** REBORN AI -> MyPoupar Supabase active telecom campaign cache. */
 public final class TelecomCampaignClient {
     private static final String PREFS = "reborn_telecom_campaigns";
     private static final long TTL_MS = 10 * 60 * 1000L;
@@ -25,14 +19,13 @@ public final class TelecomCampaignClient {
 
     public static void refreshAsync(Context context) {
         Context app = context.getApplicationContext();
-        new Thread(() -> refresh(app), "reborn-telecom-campaigns").start();
+        new Thread(() -> refresh(app), "reborn-mypoupar-telecom").start();
     }
 
     public static boolean refresh(Context context) {
-        String base = BuildConfig.CRM_SUPABASE_URL == null ? "" : BuildConfig.CRM_SUPABASE_URL.trim();
-        String key = BuildConfig.CRM_SUPABASE_ANON_KEY == null ? "" : BuildConfig.CRM_SUPABASE_ANON_KEY.trim();
+        String base = BuildConfig.MYPOUPAR_SUPABASE_URL == null ? "" : BuildConfig.MYPOUPAR_SUPABASE_URL.trim();
+        String key = BuildConfig.MYPOUPAR_SUPABASE_KEY == null ? "" : BuildConfig.MYPOUPAR_SUPABASE_KEY.trim();
         if (base.isEmpty() || key.isEmpty()) return false;
-
         try {
             String endpoint = base.replaceAll("/$", "") +
                     "/rest/v1/campanhas?select=id,title,operator,service_type,description,status,created_at" +
@@ -51,9 +44,7 @@ public final class TelecomCampaignClient {
             String line;
             while ((line = r.readLine()) != null) body.append(line);
             JSONArray arr = new JSONArray(body.toString());
-
-            SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            p.edit()
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putString("campaigns_json", arr.toString())
                     .putLong("updated_at", System.currentTimeMillis())
                     .putInt("count", arr.length())
@@ -70,11 +61,10 @@ public final class TelecomCampaignClient {
         if (age > TTL_MS) refreshAsync(context);
         String raw = p.getString("campaigns_json", "[]");
         if (raw == null || raw.equals("[]")) return "";
-
         try {
             JSONArray arr = new JSONArray(raw);
             String wanted = operator == null ? "" : normalize(operator);
-            StringBuilder out = new StringBuilder(" CAMPANHAS TELECOM CRM ATIVAS: ");
+            StringBuilder out = new StringBuilder(" CAMPANHAS TELECOM MYPOUPAR ATIVAS: ");
             int used = 0;
             for (int i = 0; i < arr.length() && used < 6; i++) {
                 JSONObject o = arr.optJSONObject(i);
