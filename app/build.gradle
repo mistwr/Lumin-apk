@@ -19,7 +19,6 @@ android {
         buildConfigField "String", "SUPABASE_ACCESS_TOKEN", '"' + (project.findProperty("SOFIA_SUPABASE_ACCESS_TOKEN") ?: "") + '"'
         buildConfigField "String", "QWEN_ENDPOINT", '"' + (project.findProperty("SOFIA_QWEN_ENDPOINT") ?: "http://127.0.0.1:11434/api/generate") + '"'
         buildConfigField "String", "MYPOUPAR_SUPABASE_URL", '"https://lblnhttwadvofhkhkbsv.supabase.co"'
-        buildConfigField "String", "MYPOUPAR_SUPABASE_KEY", '"sb_publishable_FtAZo6j9r7xexaeqjzCqHQ_ngDFJ9cS"'
     }
 
     compileOptions {
