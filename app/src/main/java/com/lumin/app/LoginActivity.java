@@ -38,7 +38,7 @@ public class LoginActivity extends AppCompatActivity {
         return scroll;
     }
 
-    private EditText field(String hint){EditText e=new EditText(this);e.setHint(hint);e.setHintTextColor(ProductUi.MUTED);e.setTextColor(Color.WHITE);e.setTextSize(16);e.setPadding(ProductUi.dp(this,16),ProductUi.dp(this,14),ProductUi.dp(this,16),ProductUi.dp(this,14));e.setBackground(ProductUi.round(ProductUi.CARD,16));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=ProductUi.dp(this,10);e.setLayoutParams(p);return e;}
+    private EditText field(String hint){EditText e=new EditText(this);e.setHint(hint);e.setHintTextColor(ProductUi.MUTED);e.setTextColor(Color.WHITE);e.setTextSize(16);e.setPadding(ProductUi.dp(this,16),ProductUi.dp(this,14),ProductUi.dp(this,16),ProductUi.dp(this,14));e.setBackground(ProductUi.round(this,ProductUi.CARD,16));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=ProductUi.dp(this,10);e.setLayoutParams(p);return e;}
 
     private void signIn(){String em=email.getText().toString().trim();String pw=password.getText().toString();if(em.isEmpty()){email.setError("Introduz o email");return;}if(pw.isEmpty()){password.setError("Introduz a palavra-passe");return;}login.setEnabled(false);status.setText("A ligar ao REBORN…");Executors.newSingleThreadExecutor().submit(()->{RebornAuthClient.Result r=RebornAuthClient.signIn(this,em,pw);runOnUiThread(()->{login.setEnabled(true);if(r.ok){status.setText("● Ligado");SdDialerBrainClient.refreshAsync(this);openHome();}else status.setText("○ "+r.message);});});}
     private void openHome(){Intent i=new Intent(this,SetupActivity.class);i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(i);finish();}
