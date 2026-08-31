@@ -11,8 +11,8 @@ android {
         applicationId "com.lumin.app"
         minSdk 26
         targetSdk 34
-        versionCode 622
-        versionName "6.2.2"
+        versionCode 630
+        versionName "6.3.0"
 
         // Public Supabase connection details can safely ship in the client.
         // User access is protected by Supabase Auth/RLS and short-lived session JWTs.
