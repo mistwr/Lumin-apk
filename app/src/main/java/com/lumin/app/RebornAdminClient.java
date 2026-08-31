@@ -25,8 +25,13 @@ public final class RebornAdminClient {
     public static void call(Context context, String action, JSONObject body, Callback callback) {
         Executors.newSingleThreadExecutor().submit(() -> {
             try {
-                if (BuildConfig.SUPABASE_URL.isEmpty() || BuildConfig.SUPABASE_ANON_KEY.isEmpty() || BuildConfig.SUPABASE_ACCESS_TOKEN.isEmpty()) {
+                if (BuildConfig.SUPABASE_URL.isEmpty() || BuildConfig.SUPABASE_ANON_KEY.isEmpty()) {
                     fail(callback, "Supabase ainda não está configurado nesta build.");
+                    return;
+                }
+                String token = RebornAuthClient.token(context);
+                if (token.isEmpty()) {
+                    fail(callback, "Sessão expirada. Inicia sessão novamente.");
                     return;
                 }
                 JSONObject payload = body == null ? new JSONObject() : body;
@@ -38,7 +43,7 @@ public final class RebornAdminClient {
                 c.setRequestMethod("POST");
                 c.setRequestProperty("Content-Type", "application/json");
                 c.setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY);
-                c.setRequestProperty("Authorization", "Bearer " + BuildConfig.SUPABASE_ACCESS_TOKEN);
+                c.setRequestProperty("Authorization", "Bearer " + token);
                 c.setDoOutput(true);
                 try (OutputStream os = c.getOutputStream()) {
                     os.write(payload.toString().getBytes(StandardCharsets.UTF_8));
