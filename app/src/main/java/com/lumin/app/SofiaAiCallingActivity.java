@@ -26,6 +26,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
     private Spinner agentSelector;
     private Switch autoTextCall;
     private SharedPreferences control;
+    private boolean loadingProfile = false;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -53,7 +54,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
         LinearLayout hero = card();
         hero.addView(text("● REBORN BRAIN ONLINE", 13, Color.rgb(106,235,183), true));
-        hero.addView(text("Escolhe o agente. O REBORN AI usa o método MyPoupar e sincroniza guiões/objeções do SD Dialer.", 15, Color.rgb(223,229,246), false));
+        hero.addView(text("Cada agente tem objetivo, tom, guião e abertura próprios. O cérebro comercial sincroniza com o SD Dialer.", 15, Color.rgb(223,229,246), false));
         root.addView(hero);
 
         root.addView(section("CLIENTE"));
@@ -63,8 +64,7 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
         root.addView(section("AGENTE REBORN AI"));
         agentSelector = new Spinner(this);
-        String[] agents = {"SOFIA · Consultora Comercial", "LUMIN · Assistente de Poupança"};
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, agents);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, RebornAgentCatalog.labels());
         agentSelector.setAdapter(adapter);
         agentSelector.setBackground(round(Color.rgb(17,23,43),14));
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1, dp(56)); sp.topMargin=dp(7);
@@ -72,21 +72,15 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
 
         agent = field("Nome do agente", "SOFIA");
         brand = field("Marca / empresa", "MyPoupar");
-        objective = field("Objetivo da chamada", "Ajudar o cliente a poupar em telecomunicações e energia");
-        script = field("Script / regras comerciais", "Segue o funil MyPoupar e os guiões/objeções do SD Dialer. Uma pergunta de cada vez. Não inventes preços.");
-        opening = field("Frase de abertura", "Olá. Falo da MyPoupar. Posso fazer-lhe duas perguntas rápidas para perceber se consegue poupar?");
+        objective = field("Objetivo da chamada", "");
+        script = field("Script / regras comerciais", "");
+        opening = field("Frase de abertura", "");
         root.addView(agent); root.addView(brand); root.addView(objective); root.addView(script); root.addView(opening);
 
         agentSelector.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                if (position == 0) {
-                    agent.setText("SOFIA");
-                    opening.setText("Olá. Falo da MyPoupar. Posso fazer-lhe duas perguntas rápidas para perceber se consegue poupar?");
-                } else {
-                    agent.setText("LUMIN");
-                    opening.setText("Olá. Sou o Lumin da MyPoupar. Posso ajudar a perceber onde consegue poupar?");
-                }
-                applyRuntimeProfile();
+                if (loadingProfile) return;
+                applyCatalogProfile(position, true);
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
@@ -111,31 +105,61 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         sync.setOnClickListener(v -> SdDialerBrainClient.refreshAsync(this));
         root.addView(sync,buttonParams());
 
-        Button save = secondary("Guardar perfil do agente");
+        Button save = secondary("Guardar alterações deste agente");
         save.setOnClickListener(v -> saveProfile());
         root.addView(save,buttonParams());
 
+        TextView note = text("Build 61.0 · perfis completos por agente + fecho automático da chamada para o SD Dialer", 12, Color.rgb(106,235,183), true);
+        note.setPadding(0,dp(18),0,0); root.addView(note);
+
         TextView credit = text("Criado pela MyPoupar · Desenvolvido pelo CEO da MyPoupar com apoio da Soluções Diferentes · Feito por REBORN AI", 12, Color.rgb(145,157,191), false);
-        credit.setPadding(0,dp(18),0,0); root.addView(credit);
+        credit.setPadding(0,dp(8),0,0); root.addView(credit);
         return scroll;
     }
 
     private void loadProfile() {
+        loadingProfile = true;
         phone.setText(control.getString("dial_phone",""));
-        String savedAgent = control.getString("agent_name","SOFIA");
-        agentSelector.setSelection("LUMIN".equalsIgnoreCase(savedAgent)?1:0);
-        agent.setText(savedAgent);
-        brand.setText(control.getString("agent_brand","MyPoupar"));
-        objective.setText(control.getString("agent_objective","Ajudar o cliente a poupar em telecomunicações e energia"));
-        script.setText(control.getString("active_script","Segue o funil MyPoupar e os guiões/objeções do SD Dialer. Uma pergunta de cada vez. Não inventes preços."));
-        opening.setText(control.getString("agent_opening","Olá. Falo da MyPoupar. Posso fazer-lhe duas perguntas rápidas para perceber se consegue poupar?"));
+        String savedId = control.getString("agent_profile_id", control.getString("agent_name","SOFIA"));
+        int index = RebornAgentCatalog.indexFor(savedId);
+        agentSelector.setSelection(index, false);
+        RebornAgentCatalog.AgentProfile base = RebornAgentCatalog.at(index);
+
+        agent.setText(control.getString("agent_name",base.name));
+        brand.setText(control.getString("agent_brand",base.brand));
+        objective.setText(control.getString("agent_objective",base.objective));
+        script.setText(control.getString("active_script",base.script));
+        opening.setText(control.getString("agent_opening",base.opening));
         autoTextCall.setChecked(control.getBoolean("auto_text_call",true));
+        loadingProfile = false;
         applyRuntimeProfile();
     }
 
+    private void applyCatalogProfile(int position, boolean persist) {
+        RebornAgentCatalog.AgentProfile p = RebornAgentCatalog.at(position);
+        agent.setText(p.name);
+        brand.setText(p.brand);
+        objective.setText(p.objective);
+        script.setText(p.script);
+        opening.setText(p.opening);
+        SofiaAgentProfile.configure(p.name,p.brand,p.tone,p.objective,p.script,p.opening);
+        if (persist) {
+            control.edit()
+                    .putString("agent_profile_id",p.id)
+                    .putString("agent_name",p.name)
+                    .putString("agent_brand",p.brand)
+                    .putString("agent_objective",p.objective)
+                    .putString("active_script",p.script)
+                    .putString("agent_opening",p.opening)
+                    .apply();
+        }
+    }
+
     private void saveProfile() {
+        RebornAgentCatalog.AgentProfile selected = RebornAgentCatalog.at(agentSelector.getSelectedItemPosition());
         control.edit()
                 .putString("dial_phone",val(phone))
+                .putString("agent_profile_id",selected.id)
                 .putString("agent_name",val(agent))
                 .putString("agent_brand",val(brand))
                 .putString("agent_objective",val(objective))
@@ -148,7 +172,8 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
     }
 
     private void applyRuntimeProfile() {
-        SofiaAgentProfile.configure(val(agent),val(brand),"consultivo, natural e profissional",val(objective),val(script),val(opening));
+        RebornAgentCatalog.AgentProfile selected = RebornAgentCatalog.at(agentSelector == null ? 0 : agentSelector.getSelectedItemPosition());
+        SofiaAgentProfile.configure(val(agent),val(brand),selected.tone,val(objective),val(script),val(opening));
     }
 
     private void prepareAndCall() {
@@ -157,7 +182,11 @@ public class SofiaAiCallingActivity extends AppCompatActivity {
         SdDialerBrainClient.refreshAsync(this);
         String number=val(phone).replace(" ","");
         if(number.isEmpty()){phone.setError("Introduz um número");return;}
-        control.edit().putString("dial_phone",number).apply();
+        control.edit()
+                .putString("dial_phone",number)
+                .putLong("call_started_at",System.currentTimeMillis())
+                .putBoolean("call_final_synced",false)
+                .apply();
         if(checkSelfPermission(Manifest.permission.CALL_PHONE)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.CALL_PHONE},REQ_CALL);return;}
         startCall(number);
     }
