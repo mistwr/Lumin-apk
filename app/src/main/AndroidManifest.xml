@@ -22,12 +22,34 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <activity
             android:name=".SetupActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
+
+        <service
+            android:name=".RebornVoiceInteractionService"
+            android:label="REBORN AI"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/reborn_voice_interaction_service" />
+        </service>
+
+        <service
+            android:name=".RebornVoiceInteractionSessionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true" />
 
         <service
             android:name=".SofiaOverlayAccessibilityService"
