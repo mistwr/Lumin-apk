@@ -213,7 +213,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 memory.setLastAssistant(reply);
                 control.edit().putString("suggested_reply", "").apply();
             }
-            main.postDelayed(() -> pressSend(reply, 0), 180);
+            main.postDelayed(() -> pressSend(reply, 0), 260);
         });
     }
 
@@ -222,17 +222,30 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (root == null) { log("last_error", "pressSend: samsung_root=null"); return; }
         AccessibilityNodeInfo edit = findEditable(root);
         AccessibilityNodeInfo send = findSendButton(root);
+        if (send == null && edit != null) send = findSendButtonNearEditor(root, edit);
 
         if (attempt == 0 && send != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
-            if (clickable != null) clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            main.postDelayed(() -> verifySent(expectedReply, 1), 350);
-            return;
+            if (clickable != null) {
+                boolean clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                log("send", clicked ? "CLICK_SENT" : "CLICK_FAILED");
+                main.postDelayed(() -> verifySent(expectedReply, 1), 450);
+                return;
+            }
+
+            Rect r = new Rect();
+            send.getBoundsInScreen(r);
+            if (!r.isEmpty()) {
+                tapBounds(r, "GEOMETRY_TAP");
+                main.postDelayed(() -> verifySent(expectedReply, 1), 450);
+                return;
+            }
         }
 
         if (attempt <= 1 && edit != null && Build.VERSION.SDK_INT >= 30) {
-            edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
-            main.postDelayed(() -> verifySent(expectedReply, 2), 300);
+            boolean enter = edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+            log("send", enter ? "IME_ENTER" : "IME_ENTER_FAILED");
+            main.postDelayed(() -> verifySent(expectedReply, 2), 400);
             return;
         }
 
@@ -240,16 +253,56 @@ public class SofiaAccessibilityService extends AccessibilityService {
             Rect r = new Rect();
             send.getBoundsInScreen(r);
             if (!r.isEmpty()) {
-                Path path = new Path();
-                path.moveTo(r.centerX(), r.centerY());
-                GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 80);
-                boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
-                log("send", dispatched ? "GESTURE_DISPATCHED" : "GESTURE_FAILED");
-                main.postDelayed(() -> verifySent(expectedReply, 3), 400);
+                tapBounds(r, "GESTURE_SEND");
+                main.postDelayed(() -> verifySent(expectedReply, 3), 500);
                 return;
             }
         }
         log("send", "FAILED_NO_SEND_ACTION");
+    }
+
+    private void tapBounds(Rect r, String label) {
+        Path path = new Path();
+        path.moveTo(r.centerX(), r.centerY());
+        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 80);
+        boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
+        log("send", dispatched ? label : label + "_FAILED");
+    }
+
+    private AccessibilityNodeInfo findSendButtonNearEditor(AccessibilityNodeInfo root, AccessibilityNodeInfo edit) {
+        Rect editor = new Rect();
+        edit.getBoundsInScreen(editor);
+        if (editor.isEmpty()) return null;
+        AccessibilityNodeInfo[] best = new AccessibilityNodeInfo[1];
+        int[] bestScore = new int[]{Integer.MAX_VALUE};
+        findSendCandidateRecursive(root, editor, best, bestScore);
+        if (best[0] != null) log("send_target", "GEOMETRY");
+        return best[0];
+    }
+
+    private void findSendCandidateRecursive(AccessibilityNodeInfo node, Rect editor, AccessibilityNodeInfo[] best, int[] bestScore) {
+        if (node == null) return;
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
+        if (!r.isEmpty() && node.isClickable()) {
+            int cx = r.centerX();
+            int cy = r.centerY();
+            boolean rightSide = cx >= editor.centerX();
+            boolean sameRow = cy >= editor.top - 80 && cy <= editor.bottom + 80;
+            boolean sensibleSize = r.width() >= 32 && r.height() >= 32 && r.width() <= 260 && r.height() <= 260;
+            if (rightSide && sameRow && sensibleSize) {
+                int dx = Math.abs(cx - editor.right);
+                int dy = Math.abs(cy - editor.centerY());
+                int score = dx + (dy * 2);
+                if (score < bestScore[0]) {
+                    bestScore[0] = score;
+                    best[0] = node;
+                }
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            findSendCandidateRecursive(node.getChild(i), editor, best, bestScore);
+        }
     }
 
     private void verifySent(String expectedReply, int nextAttempt) {
@@ -267,7 +320,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (nextAttempt <= 2) pressSend(expectedReply, nextAttempt);
         else {
             if (AUTO_INTRO.equals(expectedReply)) autoIntroSent = false;
-            log("last_error", "A mensagem ficou no campo Samsung; abre o Telefone e tenta Enviar agora");
+            log("last_error", "A mensagem ficou no campo Samsung; botão de envio não acionado");
         }
     }
 
