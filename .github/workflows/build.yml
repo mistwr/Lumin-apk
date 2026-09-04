@@ -17,19 +17,40 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Build debug APK
+
+      - name: Build unsigned release APK
         env:
           SOFIA_SUPABASE_URL: ${{ secrets.SOFIA_SUPABASE_URL }}
           SOFIA_SUPABASE_ANON_KEY: ${{ secrets.SOFIA_SUPABASE_ANON_KEY }}
           SOFIA_SUPABASE_ACCESS_TOKEN: ${{ secrets.SOFIA_SUPABASE_ACCESS_TOKEN }}
           SOFIA_QWEN_ENDPOINT: ${{ secrets.SOFIA_QWEN_ENDPOINT }}
         run: |
-          gradle assembleDebug \
+          gradle assembleRelease \
             -PSOFIA_SUPABASE_URL="$SOFIA_SUPABASE_URL" \
             -PSOFIA_SUPABASE_ANON_KEY="$SOFIA_SUPABASE_ANON_KEY" \
             -PSOFIA_SUPABASE_ACCESS_TOKEN="$SOFIA_SUPABASE_ACCESS_TOKEN" \
             -PSOFIA_QWEN_ENDPOINT="${SOFIA_QWEN_ENDPOINT:-http://127.0.0.1:11434/api/generate}"
+
+      - name: Sign APK with persistent REBORN key
+        env:
+          REBORN_KEYSTORE_B64: ${{ secrets.REBORN_KEYSTORE_B64 }}
+          REBORN_KEYSTORE_PASSWORD: ${{ secrets.REBORN_KEYSTORE_PASSWORD }}
+          REBORN_KEY_ALIAS: ${{ secrets.REBORN_KEY_ALIAS }}
+          REBORN_KEY_PASSWORD: ${{ secrets.REBORN_KEY_PASSWORD }}
+        run: |
+          test -n "$REBORN_KEYSTORE_B64" || { echo "Missing REBORN_KEYSTORE_B64"; exit 1; }
+          echo "$REBORN_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/reborn-release.jks"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          "$APKSIGNER" sign \
+            --ks "$RUNNER_TEMP/reborn-release.jks" \
+            --ks-key-alias "$REBORN_KEY_ALIAS" \
+            --ks-pass "pass:$REBORN_KEYSTORE_PASSWORD" \
+            --key-pass "pass:$REBORN_KEY_PASSWORD" \
+            --out app/build/outputs/apk/release/REBORN-AI-stable.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/REBORN-AI-stable.apk
+
       - uses: actions/upload-artifact@v4
         with:
-          name: REBORN-AI-Unified-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: REBORN-AI-stable-signed
+          path: app/build/outputs/apk/release/REBORN-AI-stable.apk
