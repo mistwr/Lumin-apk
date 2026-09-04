@@ -2,23 +2,26 @@ package com.lumin.app;
 
 import android.content.Intent;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.concurrent.Executors;
 
 public class SetupActivity extends AppCompatActivity {
+    private static final int PICK_MODEL = 4107;
     private TextView bridge;
     private TextView ai;
     private TextView sync;
-    private EditText endpoint;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -36,9 +39,9 @@ public class SetupActivity extends AppCompatActivity {
         root.setPadding(dp(22), dp(30), dp(22), dp(36));
         scroll.addView(root);
 
-        root.addView(text("SOFIA", 40, Color.WHITE, true));
-        root.addView(text("MyPoupar Intelligence · Build 56 Setup Center", 15, Color.rgb(161,173,218), false));
-        TextView intro = text("Tudo numa página: ponte Samsung, cérebro IA, atalho, chamada e SD Dialer.", 16, Color.rgb(220,226,245), false);
+        root.addView(text("REBORN AI", 40, Color.WHITE, true));
+        root.addView(text("Calling Intelligence · Local Brain", 15, Color.rgb(161,173,218), false));
+        TextView intro = text("Tudo local no Galaxy: Samsung Bridge + Gemma no próprio telemóvel. Sem OpenAI e sem servidor Ollama.", 16, Color.rgb(220,226,245), false);
         intro.setPadding(0, dp(18), 0, dp(8));
         root.addView(intro);
 
@@ -49,34 +52,22 @@ public class SetupActivity extends AppCompatActivity {
         accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         root.addView(accessibility, buttonParams());
 
-        root.addView(section("2 · CÉREBRO IA"));
-        ai = text("A testar IA…", 16, Color.rgb(255,210,120), true);
+        root.addView(section("2 · CÉREBRO LOCAL"));
+        ai = text("A verificar Gemma…", 16, Color.rgb(255,210,120), true);
         root.addView(ai);
-        endpoint = new EditText(this);
-        endpoint.setText(SofiaAiHealth.endpoint(this));
-        endpoint.setTextColor(Color.WHITE);
-        endpoint.setHintTextColor(Color.rgb(130,139,168));
-        endpoint.setHint("http://127.0.0.1:11434/api/generate");
-        endpoint.setSingleLine(true);
-        endpoint.setPadding(dp(12), dp(10), dp(12), dp(10));
-        root.addView(endpoint);
 
-        LinearLayout aiButtons = new LinearLayout(this);
-        aiButtons.setOrientation(LinearLayout.HORIZONTAL);
-        Button save = button("Guardar endpoint");
-        Button test = button("Testar IA");
-        save.setOnClickListener(v -> {
-            SofiaAiHealth.saveEndpoint(this, endpoint.getText().toString());
-            testAi();
-        });
+        Button importModel = button("Importar modelo .litertlm");
+        importModel.setOnClickListener(v -> chooseModel());
+        root.addView(importModel, buttonParams());
+
+        Button test = button("Testar Gemma local");
         test.setOnClickListener(v -> testAi());
-        aiButtons.addView(save, weight());
-        aiButtons.addView(test, weight());
-        root.addView(aiButtons);
+        root.addView(test, buttonParams());
 
-        TextView note = text("Nesta Build, a SOFIA já gere e testa o cérebro a partir daqui. O motor Qwen ainda precisa de estar instalado/ativo no telefone ou num endpoint compatível; a próxima fase integra o runtime GGUF dentro da própria app.", 13, Color.rgb(155,165,195), false);
-        note.setPadding(0, dp(10), 0, 0);
-        root.addView(note);
+        File model = LocalRebornEngine.modelFile(this);
+        TextView modelInfo = text("Destino: " + model.getAbsolutePath() + "\nModelo recomendado: Gemma3-1B-IT q4 (.litertlm, ~584 MB). Depois de instalado, a inferência é local e não tem custo por resposta.", 13, Color.rgb(155,165,195), false);
+        modelInfo.setPadding(0, dp(10), 0, 0);
+        root.addView(modelInfo);
 
         root.addView(section("3 · SD DIALER"));
         boolean configured = !BuildConfig.SUPABASE_URL.isEmpty() && !BuildConfig.SUPABASE_ANON_KEY.isEmpty() && !BuildConfig.SUPABASE_ACCESS_TOKEN.isEmpty();
@@ -84,17 +75,55 @@ public class SetupActivity extends AppCompatActivity {
         root.addView(sync);
 
         root.addView(section("4 · CHAMADA"));
-        Button console = button("Abrir consola SOFIA");
+        Button console = button("Abrir REBORN Calling Intelligence");
         console.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         root.addView(console, buttonParams());
         Button phone = button("Abrir Telefone Samsung");
         phone.setOnClickListener(v -> openPhone());
         root.addView(phone, buttonParams());
 
-        TextView ready = text("Quando Ponte Samsung = ATIVA e IA = ONLINE, a SOFIA está pronta para conversar em AUTO.", 14, Color.rgb(106,235,183), true);
+        TextView ready = text("Quando Ponte Samsung = ATIVA e GEMMA LOCAL = PRONTO, o modo AUTO pode responder sem usar OpenAI.", 14, Color.rgb(106,235,183), true);
         ready.setPadding(0, dp(22), 0, 0);
         root.addView(ready);
         return scroll;
+    }
+
+    private void chooseModel() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("application/octet-stream");
+        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/octet-stream", "application/*", "*/*"});
+        startActivityForResult(i, PICK_MODEL);
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_MODEL || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        ai.setText("◌ A copiar modelo para o REBORN…");
+        Executors.newSingleThreadExecutor().submit(() -> {
+            try {
+                LocalRebornEngine.close();
+                File dst = LocalRebornEngine.modelFile(this);
+                File tmp = new File(dst.getParentFile(), dst.getName() + ".part");
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     FileOutputStream out = new FileOutputStream(tmp)) {
+                    if (in == null) throw new IllegalStateException("Não foi possível abrir o ficheiro");
+                    byte[] buf = new byte[1024 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    out.getFD().sync();
+                }
+                if (dst.exists()) dst.delete();
+                if (!tmp.renameTo(dst)) throw new IllegalStateException("Falha ao instalar o modelo");
+                runOnUiThread(this::testAi);
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    ai.setText("○ ERRO · " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                    ai.setTextColor(Color.rgb(255,125,125));
+                });
+            }
+        });
     }
 
     @Override protected void onResume() {
@@ -111,11 +140,12 @@ public class SetupActivity extends AppCompatActivity {
 
     private void testAi() {
         if (ai == null) return;
-        ai.setText("◌ A testar IA…");
+        ai.setText("◌ A iniciar Gemma local…");
+        ai.setTextColor(Color.rgb(255,210,120));
         Executors.newSingleThreadExecutor().submit(() -> {
             SofiaAiHealth.Result r = SofiaAiHealth.check(this);
             runOnUiThread(() -> {
-                ai.setText(r.online ? "● IA ONLINE · " + r.latencyMs + " ms · " + r.message : "○ IA OFFLINE · " + r.message);
+                ai.setText(r.online ? "● GEMMA LOCAL PRONTO · " + r.latencyMs + " ms · " + r.message : "○ GEMMA LOCAL OFF · " + r.message);
                 ai.setTextColor(r.online ? Color.rgb(106,235,183) : Color.rgb(255,125,125));
             });
         });
@@ -156,12 +186,6 @@ public class SetupActivity extends AppCompatActivity {
 
     private LinearLayout.LayoutParams buttonParams() {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(56)); p.topMargin = dp(10); return p;
-    }
-
-    private LinearLayout.LayoutParams weight() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1f);
-        p.setMargins(dp(2), dp(10), dp(2), 0);
-        return p;
     }
 
     private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
