@@ -1,8 +1,8 @@
-name: Build SOFIA Android
+name: Build REBORN AI Unified
 
 on:
   push:
-    branches: [ main, sofia-build53, sofia-build53-hotfix, sofia-build53-2, sofia-build54-console, sofia-build54-1-recover, sofia-build55-1-overlay-hide ]
+    branches: [ main, reborn-ai-unified, sofia-build53, sofia-build53-hotfix, sofia-build53-2, sofia-build54-console, sofia-build54-1-recover, sofia-build55-1-overlay-hide ]
   workflow_dispatch:
 
 jobs:
@@ -31,5 +31,5 @@ jobs:
             -PSOFIA_QWEN_ENDPOINT="${SOFIA_QWEN_ENDPOINT:-http://127.0.0.1:11434/api/generate}"
       - uses: actions/upload-artifact@v4
         with:
-          name: SOFIA-Build55-1-OverlayHide-APK
+          name: REBORN-AI-Unified-debug
           path: app/build/outputs/apk/debug/app-debug.apk
