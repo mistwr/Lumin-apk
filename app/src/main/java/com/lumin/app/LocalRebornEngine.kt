@@ -1,0 +1,77 @@
+package com.lumin.app
+
+import android.content.Context
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.runBlocking
+import java.io.File
+
+/**
+ * Fully local REBORN brain. No OpenAI, no remote LLM endpoint and no Ollama server.
+ * The model lives in app-private storage and inference runs on-device with LiteRT-LM.
+ */
+object LocalRebornEngine {
+    private const val MODEL_NAME = "gemma3-1b-it-q4.litertlm"
+    private var engine: Engine? = null
+    private var loadedPath: String? = null
+
+    @JvmStatic
+    fun modelFile(context: Context): File {
+        val dir = File(context.filesDir, "reborn-models")
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, MODEL_NAME)
+    }
+
+    @JvmStatic
+    fun isInstalled(context: Context): Boolean {
+        val f = modelFile(context)
+        return f.exists() && f.length() > 100L * 1024L * 1024L
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun ensureReady(context: Context): String {
+        val file = modelFile(context)
+        if (!isInstalled(context)) {
+            throw IllegalStateException("Modelo local não instalado")
+        }
+        if (engine != null && loadedPath == file.absolutePath) return "READY"
+        close()
+        val config = EngineConfig(
+            modelPath = file.absolutePath,
+            backend = Backend.CPU(),
+            cacheDir = context.cacheDir.absolutePath
+        )
+        val created = Engine(config)
+        runBlocking { created.initialize() }
+        engine = created
+        loadedPath = file.absolutePath
+        return "READY"
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun generate(context: Context, prompt: String): String {
+        ensureReady(context)
+        val e = engine ?: throw IllegalStateException("Motor local indisponível")
+        val out = StringBuilder()
+        runBlocking {
+            e.createConversation().use { conversation ->
+                conversation.sendMessageAsync(prompt).collect { chunk ->
+                    out.append(chunk)
+                }
+            }
+        }
+        return out.toString().trim()
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun close() {
+        try { engine?.close() } catch (_: Exception) {}
+        engine = null
+        loadedPath = null
+    }
+}
