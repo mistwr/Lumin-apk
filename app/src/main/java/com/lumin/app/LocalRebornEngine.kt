@@ -10,10 +10,10 @@ import java.io.File
 
 /**
  * Fully local REBORN brain. No OpenAI, no remote LLM endpoint and no Ollama server.
- * The model lives in app-private storage and inference runs on-device with LiteRT-LM.
+ * Default target model: Qwen3-1.7B INT4 LiteRT-LM.
  */
 object LocalRebornEngine {
-    private const val MODEL_NAME = "gemma3-1b-it-q4.litertlm"
+    private const val MODEL_NAME = "qwen3-1.7b-int4.litertlm"
     private var engine: Engine? = null
     private var loadedPath: String? = null
 
@@ -34,9 +34,7 @@ object LocalRebornEngine {
     @Synchronized
     fun ensureReady(context: Context): String {
         val file = modelFile(context)
-        if (!isInstalled(context)) {
-            throw IllegalStateException("Modelo local não instalado")
-        }
+        if (!isInstalled(context)) throw IllegalStateException("Modelo local Qwen3 não instalado")
         if (engine != null && loadedPath == file.absolutePath) return "READY"
         close()
         val config = EngineConfig(
@@ -59,9 +57,7 @@ object LocalRebornEngine {
         val out = StringBuilder()
         runBlocking {
             e.createConversation().use { conversation ->
-                conversation.sendMessageAsync(prompt).collect { chunk ->
-                    out.append(chunk)
-                }
+                conversation.sendMessageAsync(prompt).collect { chunk -> out.append(chunk) }
             }
         }
         return out.toString().trim()
