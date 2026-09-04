@@ -7,11 +7,11 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.lumin.app"
+        applicationId "pt.reborn.ai"
         minSdk 26
         targetSdk 34
-        versionCode 560
-        versionName "5.6.0"
+        versionCode 640
+        versionName "6.4.0"
 
         buildConfigField "String", "SUPABASE_URL", '"' + (project.findProperty("SOFIA_SUPABASE_URL") ?: "") + '"'
         buildConfigField "String", "SUPABASE_ANON_KEY", '"' + (project.findProperty("SOFIA_SUPABASE_ANON_KEY") ?: "") + '"'
