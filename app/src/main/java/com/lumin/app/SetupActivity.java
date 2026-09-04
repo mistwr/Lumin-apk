@@ -41,7 +41,7 @@ public class SetupActivity extends AppCompatActivity {
 
         root.addView(text("REBORN AI", 40, Color.WHITE, true));
         root.addView(text("Calling Intelligence · Local Brain", 15, Color.rgb(161,173,218), false));
-        TextView intro = text("Tudo local no Galaxy: Samsung Bridge + Gemma no próprio telemóvel. Sem OpenAI e sem servidor Ollama.", 16, Color.rgb(220,226,245), false);
+        TextView intro = text("Tudo local no Galaxy: Samsung Bridge + Qwen3 no próprio telemóvel. Sem OpenAI e sem servidor Ollama.", 16, Color.rgb(220,226,245), false);
         intro.setPadding(0, dp(18), 0, dp(8));
         root.addView(intro);
 
@@ -53,19 +53,19 @@ public class SetupActivity extends AppCompatActivity {
         root.addView(accessibility, buttonParams());
 
         root.addView(section("2 · CÉREBRO LOCAL"));
-        ai = text("A verificar Gemma…", 16, Color.rgb(255,210,120), true);
+        ai = text("A verificar Qwen3…", 16, Color.rgb(255,210,120), true);
         root.addView(ai);
 
-        Button importModel = button("Importar modelo .litertlm");
+        Button importModel = button("Importar Qwen3 .litertlm");
         importModel.setOnClickListener(v -> chooseModel());
         root.addView(importModel, buttonParams());
 
-        Button test = button("Testar Gemma local");
+        Button test = button("Testar Qwen3 local");
         test.setOnClickListener(v -> testAi());
         root.addView(test, buttonParams());
 
         File model = LocalRebornEngine.modelFile(this);
-        TextView modelInfo = text("Destino: " + model.getAbsolutePath() + "\nModelo recomendado: Gemma3-1B-IT q4 (.litertlm, ~584 MB). Depois de instalado, a inferência é local e não tem custo por resposta.", 13, Color.rgb(155,165,195), false);
+        TextView modelInfo = text("Destino: " + model.getAbsolutePath() + "\nModelo recomendado: Qwen3-1.7B INT4 LiteRT-LM (~1 GB). Depois de importado, a inferência é local e não tem custo por resposta.", 13, Color.rgb(155,165,195), false);
         modelInfo.setPadding(0, dp(10), 0, 0);
         root.addView(modelInfo);
 
@@ -82,7 +82,7 @@ public class SetupActivity extends AppCompatActivity {
         phone.setOnClickListener(v -> openPhone());
         root.addView(phone, buttonParams());
 
-        TextView ready = text("Quando Ponte Samsung = ATIVA e GEMMA LOCAL = PRONTO, o modo AUTO pode responder sem usar OpenAI.", 14, Color.rgb(106,235,183), true);
+        TextView ready = text("Quando Ponte Samsung = ATIVA e QWEN3 LOCAL = PRONTO, o modo AUTO pode responder sem usar OpenAI.", 14, Color.rgb(106,235,183), true);
         ready.setPadding(0, dp(22), 0, 0);
         root.addView(ready);
         return scroll;
@@ -100,7 +100,7 @@ public class SetupActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != PICK_MODEL || resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        ai.setText("◌ A copiar modelo para o REBORN…");
+        ai.setText("◌ A copiar Qwen3 para o REBORN…");
         Executors.newSingleThreadExecutor().submit(() -> {
             try {
                 LocalRebornEngine.close();
@@ -140,12 +140,12 @@ public class SetupActivity extends AppCompatActivity {
 
     private void testAi() {
         if (ai == null) return;
-        ai.setText("◌ A iniciar Gemma local…");
+        ai.setText("◌ A iniciar Qwen3 local…");
         ai.setTextColor(Color.rgb(255,210,120));
         Executors.newSingleThreadExecutor().submit(() -> {
             SofiaAiHealth.Result r = SofiaAiHealth.check(this);
             runOnUiThread(() -> {
-                ai.setText(r.online ? "● GEMMA LOCAL PRONTO · " + r.latencyMs + " ms · " + r.message : "○ GEMMA LOCAL OFF · " + r.message);
+                ai.setText(r.online ? "● QWEN3 LOCAL PRONTO · " + r.latencyMs + " ms · " + r.message : "○ QWEN3 LOCAL OFF · " + r.message);
                 ai.setTextColor(r.online ? Color.rgb(106,235,183) : Color.rgb(255,125,125));
             });
         });
