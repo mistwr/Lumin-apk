@@ -45,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
         if (!control.contains("mode")) control.edit().putString("mode", "AUTO").apply();
         showHome();
         Executors.newSingleThreadExecutor().submit(() -> SupabaseSyncClient.flush(this));
+        warmLocalBrainAsync();
     }
 
     @Override protected void onResume() {
@@ -56,6 +57,23 @@ public class MainActivity extends AppCompatActivity {
     @Override protected void onPause() {
         ui.removeCallbacks(refresh);
         super.onPause();
+    }
+
+    private void warmLocalBrainAsync() {
+        if (!LocalRebornEngine.isInstalled(this)) return;
+        Executors.newSingleThreadExecutor().submit(() -> {
+            try {
+                LocalRebornEngine.warmUp(this);
+                getSharedPreferences("sofia_diag", MODE_PRIVATE).edit()
+                        .putString("qwen", "READY · " + LocalRebornEngine.backendName() +
+                                " · init " + LocalRebornEngine.lastInitMs() + " ms")
+                        .apply();
+            } catch (Throwable ex) {
+                getSharedPreferences("sofia_diag", MODE_PRIVATE).edit()
+                        .putString("last_error", "Warm-up: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()))
+                        .apply();
+            }
+        });
     }
 
     private void showHome() {
@@ -103,7 +121,7 @@ public class MainActivity extends AppCompatActivity {
         a2.setPadding(0, dp(6), 0, dp(10));
         action.addView(a2);
         Button start = primary("Iniciar chamada com IA  →");
-        start.setOnClickListener(v -> openPhone());
+        start.setOnClickListener(v -> prepareAndOpenPhone());
         action.addView(start, new LinearLayout.LayoutParams(-1, dp(58)));
         root.addView(action, cardParams(8));
 
@@ -178,6 +196,9 @@ public class MainActivity extends AppCompatActivity {
     private void showDiagnostics() {
         SharedPreferences d = getSharedPreferences("sofia_diag", MODE_PRIVATE);
         String report = "Samsung Bridge: " + (isAccessibilityEnabled() ? "ATIVO" : "INATIVO") +
+                "\nQwen backend: " + LocalRebornEngine.backendName() +
+                "\nQwen init: " + LocalRebornEngine.lastInitMs() + " ms" +
+                "\nÚltima geração: " + LocalRebornEngine.lastGenerationMs() + " ms" +
                 "\nSurface: " + d.getString("surface", "—") +
                 "\nÚltimo cliente: " + d.getString("last_customer", "—") +
                 "\nCaminho: " + d.getString("path", "—") +
@@ -204,8 +225,12 @@ public class MainActivity extends AppCompatActivity {
         if (liveStatus == null) return;
         String mode = control.getString("mode", "AUTO");
         String label = "ASSISTED".equals(mode) ? "ASSISTIDO" : mode;
+        String backend = LocalRebornEngine.backendName();
+        String brain = LocalRebornEngine.isInstalled(this)
+                ? "Qwen3 1.7B INT4 · " + ("NONE".equals(backend) ? "A AQUECER" : backend)
+                : "Qwen3 1.7B INT4 · NÃO INSTALADO";
         liveStatus.setText("● Samsung Bridge · " + (isAccessibilityEnabled() ? "ATIVO" : "INATIVO") +
-                "\n● Gemma 3 1B Instruct Q4_K_M · 768 MB" +
+                "\n● " + brain +
                 "\nModo · " + label);
     }
 
@@ -217,6 +242,32 @@ public class MainActivity extends AppCompatActivity {
             refreshStatus();
         });
         return b;
+    }
+
+    private void prepareAndOpenPhone() {
+        if (!LocalRebornEngine.isInstalled(this)) {
+            toast("Importa primeiro o Qwen3 local");
+            return;
+        }
+        toast("REBORN a preparar Qwen3 para a chamada…");
+        Executors.newSingleThreadExecutor().submit(() -> {
+            try {
+                LocalRebornEngine.resetConversation();
+                LocalRebornEngine.warmUp(this);
+                getSharedPreferences("sofia_diag", MODE_PRIVATE).edit()
+                        .putString("qwen", "CALL READY · " + LocalRebornEngine.backendName())
+                        .putString("last_error", "—")
+                        .apply();
+                runOnUiThread(() -> {
+                    toast("Qwen3 " + LocalRebornEngine.backendName() + " pronto · abrir chamada");
+                    openPhone();
+                });
+            } catch (Throwable ex) {
+                String msg = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                getSharedPreferences("sofia_diag", MODE_PRIVATE).edit().putString("last_error", msg).apply();
+                runOnUiThread(() -> toast("Qwen3 não ficou pronto: " + msg));
+            }
+        });
     }
 
     private void openPhone() {
