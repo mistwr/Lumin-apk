@@ -15,6 +15,7 @@ public class RebornInCallService extends InCallService {
     @Override public void onCreate() {
         super.onCreate();
         instance = this;
+        RebornCentral.init(this);
     }
 
     @Override public void onDestroy() {
@@ -26,9 +27,12 @@ public class RebornInCallService extends InCallService {
     @Override public void onCallAdded(Call call) {
         super.onCallAdded(call);
         activeCall = call;
+        RebornCentral.startSession(this);
+        RebornCentral.onCallState(this, call.getState());
         call.registerCallback(new Call.Callback() {
             @Override public void onStateChanged(Call c, int state) {
                 activeCall = c;
+                RebornCentral.onCallState(RebornInCallService.this, state);
                 RebornCallActivity.refreshFromService();
                 if (state == Call.STATE_DISCONNECTED) activeCall = null;
             }
@@ -46,6 +50,7 @@ public class RebornInCallService extends InCallService {
 
     @Override public void onCallRemoved(Call call) {
         if (activeCall == call) activeCall = null;
+        RebornCentral.onCallState(this, Call.STATE_DISCONNECTED);
         RebornCallActivity.refreshFromService();
         super.onCallRemoved(call);
     }
@@ -71,9 +76,7 @@ public class RebornInCallService extends InCallService {
         if (c.getState() == Call.STATE_HOLDING) c.unhold(); else c.hold();
     }
 
-    public void setMutedCompat(boolean muted) {
-        setMuted(muted);
-    }
+    public void setMutedCompat(boolean muted) { setMuted(muted); }
 
     public void setSpeaker(boolean enabled) {
         setAudioRoute(enabled ? android.telecom.CallAudioState.ROUTE_SPEAKER : android.telecom.CallAudioState.ROUTE_EARPIECE);
