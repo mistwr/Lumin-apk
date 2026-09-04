@@ -26,9 +26,8 @@ public final class SofiaAiHealth {
 
             LocalRebornEngine.ensureReady(context);
 
-            // Real inference smoke-test: READY only means the runtime loaded.
-            // We generate a tiny answer so the UI proves the model can actually infer on-device.
-            String reply = LocalRebornEngine.generate(
+            // Real one-shot smoke test so diagnostics do not pollute the live call conversation.
+            String reply = LocalRebornEngine.generateOneShot(
                     context,
                     "Responde apenas com a palavra OK."
             );
@@ -41,8 +40,12 @@ public final class SofiaAiHealth {
 
             String sample = reply.trim().replace('\n', ' ');
             if (sample.length() > 80) sample = sample.substring(0, 80) + "…";
+            String backend = LocalRebornEngine.backendName();
+            long initMs = LocalRebornEngine.lastInitMs();
+            long genMs = LocalRebornEngine.lastGenerationMs();
             return new Result(true, latency,
-                    "Qwen3 inferência OK · resposta: " + sample + " · 0€ por resposta");
+                    "Qwen3 " + backend + " · init " + initMs + " ms · geração " + genMs +
+                            " ms · resposta: " + sample + " · 0€ por resposta");
         } catch (Throwable ex) {
             String msg = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
             return new Result(false, System.currentTimeMillis() - start, msg);
