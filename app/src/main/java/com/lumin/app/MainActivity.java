@@ -259,7 +259,7 @@ public class MainActivity extends AppCompatActivity {
                         .putString("last_error", "—")
                         .apply();
                 runOnUiThread(() -> {
-                    toast("Qwen3 " + LocalRebornEngine.backendName() + " pronto · abrir chamada");
+                    toast("Qwen3 " + LocalRebornEngine.backendName() + " pronto · abrir REBORN Phone");
                     openPhone();
                 });
             } catch (Throwable ex) {
@@ -271,9 +271,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openPhone() {
-        Intent i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.dialer");
-        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.incallui");
-        if (i != null) startActivity(i); else toast("Telefone Samsung não encontrado");
+        startActivity(new Intent(this, RebornDialerActivity.class));
     }
 
     private boolean isAccessibilityEnabled() {
