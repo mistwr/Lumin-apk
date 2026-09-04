@@ -11,11 +11,13 @@ import java.io.File
 /**
  * Fully local REBORN brain. No OpenAI, no remote LLM endpoint and no Ollama server.
  * Default target model: Qwen3-1.7B INT4 LiteRT-LM.
+ * Prefer GPU on Galaxy for much faster startup/inference; fall back to CPU if GPU init fails.
  */
 object LocalRebornEngine {
     private const val MODEL_NAME = "qwen3-1.7b-int4.litertlm"
     private var engine: Engine? = null
     private var loadedPath: String? = null
+    private var activeBackend: String = "NONE"
 
     @JvmStatic
     fun modelFile(context: Context): File {
@@ -31,22 +33,46 @@ object LocalRebornEngine {
     }
 
     @JvmStatic
+    fun backendName(): String = activeBackend
+
+    @JvmStatic
     @Synchronized
     fun ensureReady(context: Context): String {
         val file = modelFile(context)
         if (!isInstalled(context)) throw IllegalStateException("Modelo local Qwen3 não instalado")
-        if (engine != null && loadedPath == file.absolutePath) return "READY"
+        if (engine != null && loadedPath == file.absolutePath) return "READY:$activeBackend"
         close()
-        val config = EngineConfig(
+
+        // First try the Galaxy GPU/OpenCL path. LiteRT-LM recommends GPU on Android
+        // when the device exposes libOpenCL/libvndksupport. If anything fails, keep
+        // the app usable by falling back to CPU automatically.
+        try {
+            val gpuConfig = EngineConfig(
+                modelPath = file.absolutePath,
+                backend = Backend.GPU(),
+                cacheDir = context.cacheDir.absolutePath
+            )
+            val gpuEngine = Engine(gpuConfig)
+            runBlocking { gpuEngine.initialize() }
+            engine = gpuEngine
+            loadedPath = file.absolutePath
+            activeBackend = "GPU"
+            return "READY:GPU"
+        } catch (_: Throwable) {
+            close()
+        }
+
+        val cpuConfig = EngineConfig(
             modelPath = file.absolutePath,
             backend = Backend.CPU(),
             cacheDir = context.cacheDir.absolutePath
         )
-        val created = Engine(config)
-        runBlocking { created.initialize() }
-        engine = created
+        val cpuEngine = Engine(cpuConfig)
+        runBlocking { cpuEngine.initialize() }
+        engine = cpuEngine
         loadedPath = file.absolutePath
-        return "READY"
+        activeBackend = "CPU"
+        return "READY:CPU"
     }
 
     @JvmStatic
@@ -69,5 +95,6 @@ object LocalRebornEngine {
         try { engine?.close() } catch (_: Exception) {}
         engine = null
         loadedPath = null
+        activeBackend = "NONE"
     }
 }
