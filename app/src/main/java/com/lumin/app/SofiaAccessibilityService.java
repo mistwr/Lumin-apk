@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
 public class SofiaAccessibilityService extends AccessibilityService {
     public static final String ACTION_SEND_REPLY = "com.lumin.app.SEND_REPLY";
     public static final String EXTRA_REPLY = "reply";
+    private static final String AUTO_INTRO = "Olá, boa tarde. Sou a assistente virtual da MY POUPar+. É uma chamada rápida para ajudar a perceber se os seus serviços de energia ou telecomunicações continuam competitivos. Posso explicar em vinte segundos?";
 
     private final SofiaMemory memory = new SofiaMemory();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -35,6 +36,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private SharedPreferences diag;
     private SharedPreferences control;
     private long lastTextCallReadyAt = 0L;
+    private boolean autoIntroSent = false;
 
     private final BroadcastReceiver commandReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -65,11 +67,28 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
         AccessibilityNodeInfo edit = findEditable(root);
         if (edit == null) {
+            if (lastTextCallReadyAt > 0L && System.currentTimeMillis() - lastTextCallReadyAt > 5000L) {
+                autoIntroSent = false;
+                lastCustomer = "";
+                transcript = "";
+                memory.setLastAssistant("");
+            }
             if (System.currentTimeMillis() - lastTextCallReadyAt > 2500L) log("surface", "Samsung aberto; à espera do campo Text Call");
             return;
         }
         lastTextCallReadyAt = System.currentTimeMillis();
         log("surface", "TEXT_CALL_READY");
+
+        String currentMode = mode();
+        if ("AUTO".equals(currentMode) && !autoIntroSent) {
+            autoIntroSent = true;
+            memory.setLastAssistant(AUTO_INTRO);
+            appendTranscript("REBORN", AUTO_INTRO);
+            log("path", "AUTO_INTRO");
+            log("intro", "SENDING");
+            sendReply(AUTO_INTRO, false);
+            return;
+        }
 
         String customer = findCustomerCandidate(root, edit);
         if (customer.isEmpty() || customer.equals(lastCustomer) || customer.equals(memory.getLastAssistant())) return;
@@ -79,7 +98,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         appendTranscript("Cliente", customer);
         SofiaEngine.learnFreeText(customer, memory);
 
-        String mode = mode();
+        String mode = currentMode;
         if ("MANUAL".equals(mode)) {
             log("path", "MANUAL_CAPTURE");
             control.edit().putString("suggested_reply", "").apply();
@@ -119,7 +138,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             log("send", "WAITING_USER_APPROVAL");
             return;
         }
-        appendTranscript("Sofia", reply);
+        appendTranscript("REBORN", reply);
         sendReply(reply, false);
         if (handoff) syncNow("interested", stage, true);
     }
@@ -190,7 +209,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             log("set_text", String.valueOf(set));
             if (!set) { log("send", "SET_TEXT_FAILED"); return; }
             if (userApproved) {
-                appendTranscript("Sofia", reply);
+                appendTranscript("REBORN", reply);
                 memory.setLastAssistant(reply);
                 control.edit().putString("suggested_reply", "").apply();
             }
@@ -239,13 +258,17 @@ public class SofiaAccessibilityService extends AccessibilityService {
         String current = edit == null || edit.getText() == null ? "" : edit.getText().toString().trim();
         if (current.isEmpty() || !current.equals(expectedReply.trim())) {
             log("send", "SEND_CONFIRMED");
+            if (AUTO_INTRO.equals(expectedReply)) log("intro", "SENT");
             log("surface", "TEXT_CALL_READY");
             control.edit().putString("suggested_reply", "").apply();
             return;
         }
         log("send", "NOT_SENT_ATTEMPT_" + nextAttempt);
         if (nextAttempt <= 2) pressSend(expectedReply, nextAttempt);
-        else log("last_error", "A mensagem ficou no campo Samsung; abre o Telefone e tenta Enviar agora");
+        else {
+            if (AUTO_INTRO.equals(expectedReply)) autoIntroSent = false;
+            log("last_error", "A mensagem ficou no campo Samsung; abre o Telefone e tenta Enviar agora");
+        }
     }
 
     private AccessibilityNodeInfo findSamsungRoot() {
@@ -305,11 +328,11 @@ public class SofiaAccessibilityService extends AccessibilityService {
             try {
                 JSONObject payload = new JSONObject();
                 payload.put("phone_number", memory.has("phone_number") ? memory.get("phone_number") : "unknown");
-                payload.put("client_name", memory.has("client_name") ? memory.get("client_name") : "Cliente SOFIA");
+                payload.put("client_name", memory.has("client_name") ? memory.get("client_name") : "Cliente REBORN");
                 payload.put("result", result);
                 payload.put("facts", memory.toJson());
                 JSONObject feedback = new JSONObject();
-                feedback.put("summary", "Chamada qualificada automaticamente pela SOFIA");
+                feedback.put("summary", "Chamada qualificada automaticamente pelo REBORN");
                 feedback.put("interest_level", handoff ? "high" : "medium");
                 feedback.put("next_action", handoff ? "MyPoupar handoff" : "follow_up");
                 feedback.put("intent", handoff ? "INTERESTED" : "CONTINUE");
