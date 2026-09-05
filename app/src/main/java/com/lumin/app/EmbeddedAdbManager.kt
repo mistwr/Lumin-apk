@@ -24,6 +24,7 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
     private val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val key: PrivateKey
     private val cert: Certificate
+    @Volatile private var diagnostic: String = "IDLE"
 
     init {
         setApi(Build.VERSION.SDK_INT)
@@ -33,10 +34,12 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
         if (existingKey != null && existingCert != null) {
             key = existingKey
             cert = existingCert
+            diagnostic = "RSA_IDENTITY_LOADED"
         } else {
             val generated = generateIdentity()
             key = generated.first
             cert = generated.second
+            diagnostic = "RSA_IDENTITY_CREATED"
         }
     }
 
@@ -47,7 +50,15 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
     fun pairLocal(port: Int, pairingCode: String): Boolean {
         require(port in 1..65535) { "Porta de pairing inválida" }
         require(pairingCode.length == 6 && pairingCode.all(Char::isDigit)) { "Código de pairing deve ter 6 dígitos" }
-        return pair("127.0.0.1", port, pairingCode)
+        diagnostic = "PAIRING 127.0.0.1:$port"
+        return try {
+            val ok = pair("127.0.0.1", port, pairingCode)
+            diagnostic = if (ok) "PAIRED 127.0.0.1:$port" else "PAIR_FAILED 127.0.0.1:$port"
+            ok
+        } catch (t: Throwable) {
+            diagnostic = "PAIR_ERROR ${t.javaClass.simpleName}: ${t.message ?: ""}"
+            throw t
+        }
     }
 
     fun saveConnectEndpoint(host: String, port: Int) {
@@ -58,20 +69,46 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
 
     fun savedConnectHost(): String = prefs.getString(KEY_CONNECT_HOST, "127.0.0.1") ?: "127.0.0.1"
     fun savedConnectPort(): Int = prefs.getInt(KEY_CONNECT_PORT, 0)
+    fun lastDiagnostic(): String = diagnostic
 
     fun ensureConnected(): Boolean {
-        if (isConnected) return true
+        if (isConnected) {
+            diagnostic = "CONNECTED_ALREADY"
+            return true
+        }
+
         val host = savedConnectHost()
         val port = savedConnectPort()
         if (port in 1..65535) {
-            val direct = runCatching { connect(host, port) }.getOrDefault(false)
-            if (direct) return true
+            diagnostic = "DIRECT_CONNECT $host:$port"
+            try {
+                val direct = connect(host, port)
+                if (direct) {
+                    diagnostic = "DIRECT_CONNECTED $host:$port"
+                    return true
+                }
+                diagnostic = "DIRECT_RETURNED_FALSE $host:$port"
+            } catch (t: Throwable) {
+                diagnostic = "DIRECT_ERROR $host:$port · ${t.javaClass.simpleName}: ${t.message ?: ""}"
+            }
+        } else {
+            diagnostic = "NO_SAVED_PORT"
         }
-        return runCatching { autoConnect(appContext, 15_000) }.getOrDefault(false)
+
+        val beforeAuto = diagnostic
+        return try {
+            val auto = autoConnect(appContext, 15_000)
+            diagnostic = if (auto) "AUTO_CONNECTED · after $beforeAuto" else "AUTO_NOT_FOUND · after $beforeAuto"
+            auto
+        } catch (t: Throwable) {
+            diagnostic = "AUTO_ERROR ${t.javaClass.simpleName}: ${t.message ?: ""} · after $beforeAuto"
+            false
+        }
     }
 
     fun openShell(command: String): AdbStream {
-        check(isConnected) { "ADB não ligado" }
+        check(isConnected) { "ADB não ligado · $diagnostic" }
+        diagnostic = "SHELL_OPEN"
         return openStream("shell:$command")
     }
 
