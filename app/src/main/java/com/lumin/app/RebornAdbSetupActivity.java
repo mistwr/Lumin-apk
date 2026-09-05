@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.telecom.Call;
 import android.view.Gravity;
 import android.widget.Button;
 import android.widget.EditText;
@@ -21,6 +22,7 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
     private EditText connectHost;
     private EditText connectPort;
     private TextView status;
+    private TextView detail;
     private TextView duplexStatus;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -46,11 +48,14 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         desc.setPadding(0, dp(8), 0, dp(14));
         root.addView(desc);
 
-        // Keep the result visible near the top so a connection test never appears to do nothing.
         status = tv("Estado: —", 15, Color.rgb(106,235,183), true);
-        status.setPadding(dp(12), dp(12), dp(12), dp(12));
+        status.setPadding(dp(12), dp(12), dp(12), dp(8));
         status.setBackgroundColor(Color.rgb(14,22,39));
         root.addView(status, new LinearLayout.LayoutParams(-1, -2));
+        detail = tv("Diagnóstico: —", 12, Color.rgb(180,190,215), false);
+        detail.setPadding(dp(12), 0, dp(12), dp(12));
+        detail.setBackgroundColor(Color.rgb(14,22,39));
+        root.addView(detail, new LinearLayout.LayoutParams(-1, -2));
 
         Button open = button("Abrir Opções de programador / Wireless Debugging");
         open.setOnClickListener(v -> {
@@ -70,13 +75,17 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         root.addView(pair);
 
         root.addView(label("LIGAÇÃO ADB NORMAL"));
-        connectHost = edit("Host (ex.: 127.0.0.1 ou IP do telefone)");
+        connectHost = edit("Host (ex.: 192.168.1.234)");
         connectPort = edit("Porta do Wireless Debugging");
         root.addView(connectHost);
         root.addView(connectPort);
         Button connect = button("Guardar e testar ligação");
         connect.setOnClickListener(v -> doConnect());
         root.addView(connect);
+
+        Button full = button("AUTO · ligar ADB + testar PCM em chamada");
+        full.setOnClickListener(v -> autoConnectAndPcm());
+        root.addView(full);
 
         Button pcm = button("Testar ponte VOICE_CALL PCM");
         pcm.setOnClickListener(v -> testPcm());
@@ -96,7 +105,7 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         duplexStatus.setPadding(0, dp(8), 0, 0);
         root.addView(duplexStatus);
 
-        TextView note = tv("A porta de pairing muda quando abres novamente o diálogo. A porta ADB normal é a que aparece no ecrã principal de Wireless Debugging.", 12, Color.rgb(145,155,180), false);
+        TextView note = tv("A porta de pairing muda ao abrir novamente o diálogo. A porta ADB normal é a que aparece no ecrã principal de Wireless Debugging. Para validar VOICE_CALL PCM tem de existir uma chamada celular ativa.", 12, Color.rgb(145,155,180), false);
         note.setPadding(0, dp(16), 0, 0);
         root.addView(note);
 
@@ -133,15 +142,18 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         status.setText("Estado: a emparelhar…");
         toast("A emparelhar…");
         Executors.newSingleThreadExecutor().submit(() -> {
+            EmbeddedAdbManager adb = EmbeddedAdbManager.get(this);
             try {
-                boolean ok = EmbeddedAdbManager.get(this).pairLocal(port, code);
+                boolean ok = adb.pairLocal(port, code);
                 runOnUiThread(() -> {
                     status.setText(ok ? "Estado: PAIRED ✅" : "Estado: pairing falhou");
+                    detail.setText("Diagnóstico: " + adb.lastDiagnostic());
                     toast(ok ? "PAIRING OK" : "Pairing falhou");
                 });
             } catch (Throwable t) {
                 runOnUiThread(() -> {
                     status.setText("Estado: erro pairing · " + safe(t));
+                    detail.setText("Diagnóstico: " + adb.lastDiagnostic());
                     toast("Erro pairing: " + safe(t));
                 });
             }
@@ -153,40 +165,103 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         final int port = parsePort(connectPort.getText().toString());
         if (host.isEmpty() || port <= 0) { toast("Confirma host e porta ADB normal"); return; }
         status.setText("Estado: a ligar a " + host + ":" + port + " …");
+        detail.setText("Diagnóstico: tentativa direta + descoberta automática");
         toast("A testar ADB…");
         Executors.newSingleThreadExecutor().submit(() -> {
+            EmbeddedAdbManager adb = EmbeddedAdbManager.get(this);
             try {
-                EmbeddedAdbManager adb = EmbeddedAdbManager.get(this);
                 adb.saveConnectEndpoint(host, port);
                 boolean ok = adb.ensureConnected();
+                String diag = adb.lastDiagnostic();
                 runOnUiThread(() -> {
                     status.setText(ok ? "Estado: ADB CONNECTED ✅ · " + host + ":" + port : "Estado: ADB NÃO LIGOU · " + host + ":" + port);
+                    detail.setText("Diagnóstico: " + diag);
                     toast(ok ? "ADB CONNECTED" : "ADB não ligou");
                 });
             } catch (Throwable t) {
                 runOnUiThread(() -> {
                     status.setText("Estado: erro ADB · " + safe(t));
+                    detail.setText("Diagnóstico: " + adb.lastDiagnostic());
                     toast("Erro ADB: " + safe(t));
                 });
             }
         });
     }
 
+    private void autoConnectAndPcm() {
+        final String host = connectHost.getText().toString().trim();
+        final int port = parsePort(connectPort.getText().toString());
+        if (host.isEmpty() || port <= 0) { toast("Confirma host e porta ADB normal"); return; }
+        Call call = RebornInCallService.activeCall();
+        if (call == null || call.getState() != Call.STATE_ACTIVE) {
+            status.setText("Estado: falta chamada celular ATIVA");
+            detail.setText("Diagnóstico: primeiro inicia/atende uma chamada, depois volta aqui e toca AUTO");
+            toast("Faz uma chamada ativa primeiro");
+            return;
+        }
+        status.setText("Estado: AUTO · a ligar ADB…");
+        detail.setText("Diagnóstico: " + host + ":" + port);
+        Executors.newSingleThreadExecutor().submit(() -> {
+            EmbeddedAdbManager adb = EmbeddedAdbManager.get(this);
+            try {
+                adb.saveConnectEndpoint(host, port);
+                boolean ok = adb.ensureConnected();
+                String diag = adb.lastDiagnostic();
+                if (!ok) {
+                    runOnUiThread(() -> {
+                        status.setText("Estado: AUTO parou · ADB NÃO LIGOU");
+                        detail.setText("Diagnóstico: " + diag);
+                        toast("ADB não ligou");
+                    });
+                    return;
+                }
+                runOnUiThread(() -> {
+                    status.setText("Estado: ADB CONNECTED ✅ · a iniciar PCM…");
+                    detail.setText("Diagnóstico: " + diag);
+                    startPcmProbe(8000L);
+                });
+            } catch (Throwable t) {
+                runOnUiThread(() -> {
+                    status.setText("Estado: AUTO erro · " + safe(t));
+                    detail.setText("Diagnóstico: " + adb.lastDiagnostic());
+                    toast("Erro AUTO: " + safe(t));
+                });
+            }
+        });
+    }
+
     private void testPcm() {
-        status.setText("Estado: a testar PCM… faz uma chamada ativa para validar VOICE_CALL");
+        Call call = RebornInCallService.activeCall();
+        if (call == null || call.getState() != Call.STATE_ACTIVE) {
+            status.setText("Estado: PCM precisa de chamada celular ATIVA");
+            detail.setText("Diagnóstico: sem Call.STATE_ACTIVE");
+            toast("Faz uma chamada ativa primeiro");
+            return;
+        }
+        startPcmProbe(8000L);
+    }
+
+    private void startPcmProbe(long durationMs) {
+        status.setText("Estado: a testar VOICE_CALL PCM… fala dos dois lados");
+        detail.setText("Diagnóstico: a aguardar frames durante " + (durationMs / 1000L) + " s");
         toast("Teste PCM iniciado");
         try {
             RebornAudioEngine.start(this);
             new android.os.Handler(getMainLooper()).postDelayed(() -> {
                 String s = RebornAudioBridge.state();
                 long frames = RebornAudioBridge.frames();
-                status.setText("Estado: " + s + " · frames " + frames + (frames > 0 ? " ✅" : ""));
+                android.content.SharedPreferences p = getSharedPreferences("reborn_central", MODE_PRIVATE);
+                String pcm = p.getString("pcm_capture", "—");
+                String err = p.getString("pcm_error", "");
+                status.setText("Estado: " + s + " · frames " + frames + (frames > 0 ? " ✅" : " ❌"));
+                detail.setText("Diagnóstico: PCM " + pcm + (err == null || err.isEmpty() ? "" : " · " + err));
                 toast(frames > 0 ? "PCM ACTIVE · frames " + frames : "PCM sem frames · " + s);
                 refreshDuplex();
                 RebornAudioEngine.stop();
-            }, 5000L);
+            }, durationMs);
         } catch (Throwable t) {
             status.setText("Estado: erro PCM · " + safe(t));
+            detail.setText("Diagnóstico: " + safe(t));
             toast("Erro PCM: " + safe(t));
         }
     }
@@ -194,6 +269,7 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
     private void refresh() {
         String pcm = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("pcm_capture", "IDLE");
         status.setText("Estado: " + pcm);
+        detail.setText("Diagnóstico: " + EmbeddedAdbManager.get(this).lastDiagnostic());
         refreshDuplex();
     }
 
