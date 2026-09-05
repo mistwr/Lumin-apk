@@ -18,12 +18,14 @@ object RebornDigitalUplinkBridge {
     @Volatile private var bytesSent: Long = 0
     @Volatile private var daemonStatus: String = ""
     @Volatile private var daemonTrace: String = ""
+    @Volatile private var officialUplink: String = "NOT_TESTED"
 
     @JvmStatic fun state(): String = state
     @JvmStatic fun lastError(): String = lastError
     @JvmStatic fun bytesSent(): Long = bytesSent
     @JvmStatic fun daemonStatus(): String = daemonStatus
     @JvmStatic fun daemonTrace(): String = daemonTrace
+    @JvmStatic fun officialUplink(): String = officialUplink
 
     @JvmStatic
     fun playWav(context: Context, wav: File, onDone: ((Boolean) -> Unit)? = null) {
@@ -33,6 +35,7 @@ object RebornDigitalUplinkBridge {
             lastError = ""
             daemonStatus = ""
             daemonTrace = ""
+            officialUplink = "NOT_TESTED"
             state = "PREPARING_TELEPHONY_ROUTE"
             publish(app)
             var server: ServerSocket? = null
@@ -75,6 +78,23 @@ object RebornDigitalUplinkBridge {
                             val msg = line.removePrefix("REBORN_STATUS|")
                             daemonStatus = msg
                             daemonTrace = if (daemonTrace.isEmpty()) msg else (daemonTrace + "\n" + msg).takeLast(6000)
+
+                            when {
+                                msg.startsWith("CALL_AUDIO_INTERCEPTION=") -> {
+                                    officialUplink = msg
+                                }
+                                msg.startsWith("OFFICIAL_UPLINK_SKIPPED") ||
+                                        msg.startsWith("OFFICIAL_UPLINK_API_ERROR") ||
+                                        msg.startsWith("OFFICIAL_UPLINK_TRACK_NULL") ||
+                                        msg.startsWith("OFFICIAL_UPLINK_TRACK_STATE") ||
+                                        msg.startsWith("OFFICIAL_UPLINK_PLAY_ERROR") ||
+                                        msg.startsWith("OFFICIAL_UPLINK_PLAY_STATE") ||
+                                        msg.startsWith("READY_FOR_PCM:OFFICIAL_CALL_UPLINK") ||
+                                        msg.startsWith("STREAM_COMPLETE") && msg.contains("route=OFFICIAL_CALL_UPLINK") -> {
+                                    officialUplink = msg
+                                }
+                            }
+
                             when {
                                 msg.startsWith("TELEPHONY_FOUND") -> state = "TELEPHONY_FOUND"
                                 msg.startsWith("TELEPHONY_ROUTE_READY") -> state = "TELEPHONY_ROUTE_READY"
@@ -202,6 +222,7 @@ object RebornDigitalUplinkBridge {
             .putString("digital_uplink_error", lastError)
             .putString("digital_uplink_daemon", daemonStatus)
             .putString("digital_uplink_trace", daemonTrace)
+            .putString("official_uplink_state", officialUplink)
             .putLong("digital_uplink_bytes", bytesSent)
             .apply()
         RebornCallActivity.refreshFromService()
