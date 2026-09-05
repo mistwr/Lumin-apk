@@ -19,6 +19,7 @@ public class RebornInCallService extends InCallService {
     }
 
     @Override public void onDestroy() {
+        RebornCallAudioController.stop();
         if (instance == this) instance = null;
         activeCall = null;
         super.onDestroy();
@@ -28,11 +29,12 @@ public class RebornInCallService extends InCallService {
         super.onCallAdded(call);
         activeCall = call;
         RebornCentral.startSession(this);
-        RebornCentral.onCallState(this, call.getState());
+        handleState(call.getState());
+
         call.registerCallback(new Call.Callback() {
             @Override public void onStateChanged(Call c, int state) {
                 activeCall = c;
-                RebornCentral.onCallState(RebornInCallService.this, state);
+                handleState(state);
                 RebornCallActivity.refreshFromService();
                 if (state == Call.STATE_DISCONNECTED) activeCall = null;
             }
@@ -48,8 +50,18 @@ public class RebornInCallService extends InCallService {
         startActivity(i);
     }
 
+    private void handleState(int state) {
+        RebornCentral.onCallState(this, state);
+        if (state == Call.STATE_ACTIVE) {
+            RebornCallAudioController.start(this);
+        } else if (state == Call.STATE_DISCONNECTED) {
+            RebornCallAudioController.stop();
+        }
+    }
+
     @Override public void onCallRemoved(Call call) {
         if (activeCall == call) activeCall = null;
+        RebornCallAudioController.stop();
         RebornCentral.onCallState(this, Call.STATE_DISCONNECTED);
         RebornCallActivity.refreshFromService();
         super.onCallRemoved(call);
