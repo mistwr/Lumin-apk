@@ -18,8 +18,8 @@ import java.net.Socket
 
 /**
  * UPLINK V3: shell-UID probe with Samsung-friendly system-context recovery.
- * It also probes hidden USAGE_CALL_ASSISTANT (17), which Android defines specifically
- * for assistant speech to a remote caller on Cell/VoIP calls.
+ * First tries Android's official call-uplink injection AudioTrack, then falls back to
+ * framework routing experiments for diagnostics.
  */
 object RebornDigitalUplinkDaemonV3 {
     @JvmStatic
@@ -40,8 +40,7 @@ object RebornDigitalUplinkDaemonV3 {
             }
 
             report("V3_UID=${Process.myUid()}:PID=${Process.myPid()}")
-            val hidden = installHiddenApiExemptions()
-            report("HIDDEN_API=$hidden")
+            report("HIDDEN_API=${installHiddenApiExemptions()}")
 
             val ctx = obtainSystemContext()
             report("CONTEXT=${ctx.second}")
@@ -51,18 +50,16 @@ object RebornDigitalUplinkDaemonV3 {
                 return
             }
 
-            val phonePerm = context.checkPermission(
-                Manifest.permission.MODIFY_PHONE_STATE, Process.myPid(), Process.myUid()
-            ) == PackageManager.PERMISSION_GRANTED
-            val routingPerm = context.checkPermission(
-                "android.permission.MODIFY_AUDIO_ROUTING", Process.myPid(), Process.myUid()
-            ) == PackageManager.PERMISSION_GRANTED
+            fun hasPermission(name: String): Boolean = runCatching {
+                context.checkPermission(name, Process.myPid(), Process.myUid()) == PackageManager.PERMISSION_GRANTED
+            }.getOrDefault(false)
+
+            val phonePerm = hasPermission(Manifest.permission.MODIFY_PHONE_STATE)
+            val routingPerm = hasPermission("android.permission.MODIFY_AUDIO_ROUTING")
+            val interceptPerm = hasPermission("android.permission.CALL_AUDIO_INTERCEPTION")
             report("MODIFY_PHONE_STATE=$phonePerm")
             report("MODIFY_AUDIO_ROUTING=$routingPerm")
-            if (!phonePerm) {
-                report("UPLINK_GATE_BLOCKED:NO_MODIFY_PHONE_STATE")
-                return
-            }
+            report("CALL_AUDIO_INTERCEPTION=$interceptPerm")
 
             val am = runCatching { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
                 .getOrElse {
@@ -75,6 +72,56 @@ object RebornDigitalUplinkDaemonV3 {
             }
 
             report("AUDIO_MODE=${am.mode}")
+
+            val channelMask = if (channels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(channelMask)
+                .build()
+
+            // Android framework has a dedicated PSTN/VoIP call-uplink injection AudioTrack.
+            // Try it first because ordinary TYPE_TELEPHONY AudioTrack creation is rejected on this Samsung.
+            if (interceptPerm) {
+                val officialTrack = runCatching {
+                    val method = AudioManager::class.java.getDeclaredMethod(
+                        "getCallUplinkInjectionAudioTrack",
+                        AudioFormat::class.java
+                    ).apply { isAccessible = true }
+                    method.invoke(am, format) as? AudioTrack
+                }.onFailure {
+                    report("OFFICIAL_UPLINK_API_ERROR=${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}")
+                }.getOrNull()
+
+                if (officialTrack != null) {
+                    try {
+                        report("OFFICIAL_UPLINK_TRACK_STATE=${officialTrack.state}")
+                        if (officialTrack.state == AudioTrack.STATE_INITIALIZED) {
+                            runCatching { officialTrack.play() }
+                                .onFailure { report("OFFICIAL_UPLINK_PLAY_ERROR=${it.javaClass.simpleName}:${it.message ?: ""}") }
+                            report("OFFICIAL_UPLINK_PLAY_STATE=${officialTrack.playState}")
+                            if (officialTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                                report("READY_FOR_PCM:OFFICIAL_CALL_UPLINK")
+                                streamPcm(socket, officialTrack, "OFFICIAL_CALL_UPLINK", report)
+                                return
+                            }
+                        }
+                    } finally {
+                        runCatching { if (officialTrack.playState == AudioTrack.PLAYSTATE_PLAYING) officialTrack.stop() }
+                        runCatching { officialTrack.release() }
+                    }
+                } else {
+                    report("OFFICIAL_UPLINK_TRACK_NULL")
+                }
+            } else {
+                report("OFFICIAL_UPLINK_SKIPPED:NO_CALL_AUDIO_INTERCEPTION")
+            }
+
+            if (!phonePerm) {
+                report("UPLINK_GATE_BLOCKED:NO_MODIFY_PHONE_STATE")
+                return
+            }
+
             val outputs = runCatching { am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList() }
                 .getOrElse {
                     report("GET_DEVICES_ERROR=${it.javaClass.simpleName}:${it.message ?: ""}")
@@ -88,23 +135,13 @@ object RebornDigitalUplinkDaemonV3 {
             }
             report("TELEPHONY_FOUND:id=${telephony.id}:name=${telephony.productName}")
 
-            val channelMask = if (channels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
             val min = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
             if (min <= 0) {
                 report("BAD_MIN_BUFFER=$min")
                 return
             }
-            val format = AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(sampleRate)
-                .setChannelMask(channelMask)
-                .build()
 
-            val candidates = arrayOf(
-                "CALL_ASSISTANT",
-                "VOICE_COMMUNICATION",
-                "LEGACY_STREAM_VOICE_CALL"
-            )
+            val candidates = arrayOf("CALL_ASSISTANT", "VOICE_COMMUNICATION", "LEGACY_STREAM_VOICE_CALL")
             var selected: AudioTrack? = null
             var selectedName = ""
 
@@ -134,13 +171,11 @@ object RebornDigitalUplinkDaemonV3 {
                     }
                     report("CANDIDATE=$candidate:SET_TELEPHONY=$preferred")
                     if (!preferred) continue
-
                     track.play()
                     val primer = ByteArray((sampleRate / 20) * channels * 2)
                     val pw = track.write(primer, 0, primer.size, AudioTrack.WRITE_BLOCKING)
                     val routed = runCatching { track.routedDevice }.getOrNull()
                     report("CANDIDATE=$candidate:PLAY=${track.playState}:PRIMER=$pw:ROUTED=${routed?.id ?: -1}:${routed?.type ?: -1}")
-
                     if (track.playState == AudioTrack.PLAYSTATE_PLAYING && routed?.type == AudioDeviceInfo.TYPE_TELEPHONY) {
                         selected = track
                         selectedName = candidate
@@ -163,27 +198,8 @@ object RebornDigitalUplinkDaemonV3 {
             }
 
             report("READY_FOR_PCM:$selectedName")
-            val input = BufferedInputStream(socket.getInputStream(), 64 * 1024)
             try {
-                val buf = ByteArray(8192)
-                var total = 0L
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    if (n == 0) continue
-                    var off = 0
-                    while (off < n) {
-                        val w = track.write(buf, off, n - off, AudioTrack.WRITE_BLOCKING)
-                        if (w <= 0) {
-                            report("WRITE_ERROR=$w")
-                            return
-                        }
-                        off += w
-                        total += w
-                    }
-                }
-                val routed = runCatching { track.routedDevice }.getOrNull()
-                report("STREAM_COMPLETE:bytes=$total:routed=${routed?.id ?: -1}:${routed?.type ?: -1}:route=$selectedName")
+                streamPcm(socket, track, selectedName, report)
             } finally {
                 runCatching { track.stop() }
                 runCatching { track.release() }
@@ -191,14 +207,35 @@ object RebornDigitalUplinkDaemonV3 {
         }
     }
 
+    private fun streamPcm(socket: Socket, track: AudioTrack, route: String, report: (String) -> Unit) {
+        val input = BufferedInputStream(socket.getInputStream(), 64 * 1024)
+        val buf = ByteArray(8192)
+        var total = 0L
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            if (n == 0) continue
+            var off = 0
+            while (off < n) {
+                val w = track.write(buf, off, n - off, AudioTrack.WRITE_BLOCKING)
+                if (w <= 0) {
+                    report("WRITE_ERROR=$w")
+                    return
+                }
+                off += w
+                total += w
+            }
+        }
+        val routed = runCatching { track.routedDevice }.getOrNull()
+        report("STREAM_COMPLETE:bytes=$total:routed=${routed?.id ?: -1}:${routed?.type ?: -1}:route=$route")
+    }
+
     private fun buildAttributes(candidate: String, report: (String) -> Unit): AudioAttributes? {
         val b = AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         return runCatching {
             when (candidate) {
                 "CALL_ASSISTANT" -> {
-                    val m = AudioAttributes.Builder::class.java.getDeclaredMethod(
-                        "setSystemUsage", Int::class.javaPrimitiveType
-                    )
+                    val m = AudioAttributes.Builder::class.java.getDeclaredMethod("setSystemUsage", Int::class.javaPrimitiveType)
                     m.isAccessible = true
                     m.invoke(b, 17)
                 }
@@ -217,8 +254,7 @@ object RebornDigitalUplinkDaemonV3 {
             val c = Class.forName("dalvik.system.VMRuntime")
             val get = c.getDeclaredMethod("getRuntime").apply { isAccessible = true }
             val rt = get.invoke(null)
-            val set = c.getDeclaredMethod("setHiddenApiExemptions", Array<String>::class.java)
-                .apply { isAccessible = true }
+            val set = c.getDeclaredMethod("setHiddenApiExemptions", Array<String>::class.java).apply { isAccessible = true }
             set.invoke(rt, arrayOf("Landroid/", "Ldalvik/"))
             "OK"
         }.getOrElse { "FAIL:${it.javaClass.simpleName}:${it.message ?: ""}" }
