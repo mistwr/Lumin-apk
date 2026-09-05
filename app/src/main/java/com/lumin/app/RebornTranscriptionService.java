@@ -13,15 +13,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 
-/**
- * Live PT-PT STT for REBORN Phone.
- *
- * Starts with the normal on-device recognizer, then automatically switches to Android's
- * external-audio recognition path when the no-root VOICE_CALL PCM bridge becomes active.
- * On Android 13+ the recognizer receives the captured PCM through a ParcelFileDescriptor
- * pipe instead of relying on the microphone. If the OEM recognition service rejects that
- * input, diagnostics expose the failure and REBORN can fall back to the normal recognizer.
- */
+/** Live PT-PT STT for REBORN Phone, with external VOICE_CALL PCM input. */
 public final class RebornTranscriptionService {
     private static final String EXTRA_AUDIO_SOURCE = "android.speech.extra.AUDIO_SOURCE";
     private static final String EXTRA_AUDIO_SOURCE_CHANNEL_COUNT = "android.speech.extra.AUDIO_SOURCE_CHANNEL_COUNT";
@@ -36,6 +28,9 @@ public final class RebornTranscriptionService {
     private static volatile String lastText = "";
     private static volatile int pcmRate = 48000;
     private static volatile int pcmChannels = 1;
+    private static volatile String recognitionLanguage = "pt-PT";
+    private static volatile boolean preferOffline = true;
+    private static volatile boolean languageFallbackTried = false;
     private static Context app;
     private static ParcelFileDescriptor pcmRead;
     private static ParcelFileDescriptor pcmWrite;
@@ -50,6 +45,9 @@ public final class RebornTranscriptionService {
         running = true;
         externalPcm = false;
         pcmSwitchPending = false;
+        recognitionLanguage = "pt-PT";
+        preferOffline = true;
+        languageFallbackTried = false;
         state = "STARTING_MIC_FALLBACK";
         publish();
 
@@ -71,7 +69,6 @@ public final class RebornTranscriptionService {
         });
     }
 
-    /** Switch recognition from microphone input to the proven VOICE_CALL PCM stream. */
     public static void enableExternalPcm(Context context, int sampleRate, int channels) {
         if (!running || externalPcm || pcmSwitchPending) return;
         if (android.os.Build.VERSION.SDK_INT < 33) {
@@ -102,7 +99,6 @@ public final class RebornTranscriptionService {
         });
     }
 
-    /** Called directly by the digital call-audio bridge for every captured PCM16LE frame. */
     public static void feedPcm(short[] samples, int sampleRate, int channels) {
         if (!running || !externalPcm || samples == null || samples.length == 0) return;
         FileOutputStream out;
@@ -117,11 +113,14 @@ public final class RebornTranscriptionService {
                 if (pcmOut != null) pcmOut.write(bytes);
             }
             Context c = app;
-            if (c != null) c.getSharedPreferences("reborn_central", Context.MODE_PRIVATE).edit()
-                    .putString("stt_input", "VOICE_CALL_PCM")
-                    .putInt("stt_pcm_rate", sampleRate)
-                    .putInt("stt_pcm_channels", channels)
-                    .apply();
+            if (c != null && (RebornDigitalAudioController.frameCount() % 12L == 0L)) {
+                c.getSharedPreferences("reborn_central", Context.MODE_PRIVATE).edit()
+                        .putString("stt_input", "VOICE_CALL_PCM")
+                        .putInt("stt_pcm_rate", sampleRate)
+                        .putInt("stt_pcm_channels", channels)
+                        .putString("stt_language", recognitionLanguage)
+                        .apply();
+            }
         } catch (Throwable t) {
             saveError(t);
         }
@@ -159,6 +158,21 @@ public final class RebornTranscriptionService {
             @Override public void onEndOfSpeech() { state = "PROCESSING"; publish(); }
             @Override public void onError(int error) {
                 if (!running) return;
+
+                // Samsung's recognizer returned 12 (language not supported) with the external
+                // PCM path even though pt-PT works on microphone input. Retry the same captured
+                // PCM with generic Portuguese and allow the installed recognition service to use
+                // its online language pack. Do this once, then surface the real error.
+                if (externalPcm && error == 12 && !languageFallbackTried) {
+                    languageFallbackTried = true;
+                    recognitionLanguage = "pt";
+                    preferOffline = false;
+                    state = "PCM_LANG_FALLBACK_PT";
+                    saveMode("VOICE_CALL_PCM_LANG_FALLBACK_PT");
+                    restartSoon(300L);
+                    return;
+                }
+
                 state = (externalPcm ? "PCM_ERROR_" : "MIC_ERROR_") + error;
                 publish();
                 restartSoon();
@@ -179,10 +193,10 @@ public final class RebornTranscriptionService {
 
         Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-PT");
-        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "pt-PT");
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, recognitionLanguage);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, recognitionLanguage);
         i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+        i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline);
         i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 700L);
         i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 450L);
 
@@ -228,7 +242,9 @@ public final class RebornTranscriptionService {
         pcmWrite = null;
     }
 
-    private static void restartSoon() {
+    private static void restartSoon() { restartSoon(externalPcm ? 180L : 300L); }
+
+    private static void restartSoon(long delayMs) {
         Context c = app;
         if (c == null || !running) return;
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
@@ -236,7 +252,7 @@ public final class RebornTranscriptionService {
             try { recognizer.cancel(); } catch (Throwable ignored) {}
             if (externalPcm) closePcmPipe();
             listen();
-        }, externalPcm ? 120L : 250L);
+        }, delayMs);
     }
 
     private static void consume(Bundle bundle, boolean finalResult) {
@@ -258,7 +274,7 @@ public final class RebornTranscriptionService {
     private static void saveMode(String mode) {
         Context c = app;
         if (c != null) c.getSharedPreferences("reborn_central", Context.MODE_PRIVATE)
-                .edit().putString("stt_input", mode).apply();
+                .edit().putString("stt_input", mode).putString("stt_language", recognitionLanguage).apply();
         publish();
     }
 
