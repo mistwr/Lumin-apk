@@ -24,6 +24,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
     private TextView reply;
     private TextView voice;
     private TextView voiceRoute;
+    private TextView voiceVerify;
     private boolean muted = false;
     private boolean speaker = false;
 
@@ -94,6 +95,11 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         voiceRoute.setPadding(0, dp(4), 0, dp(4));
         root.addView(voiceRoute);
 
+        voiceVerify = t("Verificação remota: IDLE", 13, Color.rgb(148,160,194), true);
+        voiceVerify.setGravity(Gravity.CENTER);
+        voiceVerify.setPadding(0, dp(2), 0, dp(6));
+        root.addView(voiceVerify);
+
         LinearLayout controls1 = row();
         Button answer = b("Atender");
         answer.setOnClickListener(v -> { RebornInCallService s = RebornInCallService.get(); if (s != null) s.answer(); });
@@ -153,12 +159,16 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         route2.addView(digital, weight());
         root.addView(route2);
 
-        Button testVoice = b("TESTE: outro telefone deve ouvir esta frase");
+        Button testVoice = b("TESTE REMOTO: provar se o outro telefone ouve");
         LinearLayout.LayoutParams testP = new LinearLayout.LayoutParams(-1, dp(62));
         testP.topMargin = dp(10);
         testVoice.setLayoutParams(testP);
-        testVoice.setOnClickListener(v -> RebornVoiceController.speak(this,
-                "Teste REBORN. Se me está a ouvir no outro telefone, a saída de voz desta rota funcionou."));
+        testVoice.setOnClickListener(v -> {
+            RebornVoiceVerifier.start(this, RebornVoiceController.route());
+            RebornVoiceController.speak(this,
+                    "Teste REBORN. Se me está a ouvir no outro telefone, diga agora: sim, ouvi.");
+            refresh();
+        });
         root.addView(testVoice);
 
         TextView trTitle = t("TRANSCRIÇÃO AO VIVO", 12, Color.rgb(148,160,194), true);
@@ -187,7 +197,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         });
         root.addView(speak);
 
-        TextView note = t("AUTO tenta Samsung Text Call e mantém TTS local. ACÚSTICA força altifalante para provar o ciclo completo. DIGITAL EXP não é marcado como funcional enquanto o outro telefone não ouvir uma injeção digital direta.", 12, Color.rgb(145,155,180), false);
+        TextView note = t("A rota só fica confirmada quando a resposta do outro lado (‘sim, ouvi’) voltar pela transcrição da própria chamada. DIGITAL EXP continua não comprovada até esse teste passar sem rota acústica/Samsung.", 12, Color.rgb(145,155,180), false);
         note.setGravity(Gravity.CENTER);
         note.setPadding(0, dp(18), 0, 0);
         root.addView(note);
@@ -196,6 +206,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
     }
 
     private void setVoiceRoute(String route) {
+        RebornVoiceVerifier.cancel();
         RebornVoiceController.setRoute(this, route);
         refresh();
     }
@@ -235,6 +246,8 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         reply.setText(r == null || r.trim().isEmpty() ? "A aguardar cliente…" : r);
         voice.setText("Voz: " + RebornVoiceController.state());
         voiceRoute.setText("Rota de voz: " + RebornVoiceController.route());
+        voiceVerify.setText("Verificação remota: " + RebornVoiceVerifier.state() +
+                (RebornVoiceVerifier.route().isEmpty() ? "" : " · " + RebornVoiceVerifier.route()));
     }
 
     private String label(int s) {
