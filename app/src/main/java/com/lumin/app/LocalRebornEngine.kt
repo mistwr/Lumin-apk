@@ -11,13 +11,12 @@ import java.io.File
 
 /**
  * Fully local REBORN brain. No OpenAI, no remote LLM endpoint and no Ollama server.
- * Default target model: Qwen3-1.7B INT4 LiteRT-LM.
  *
- * Performance strategy for calls:
- * - prefer Galaxy GPU/OpenCL, CPU only as fallback;
- * - keep the Engine loaded instead of reinitialising between turns;
- * - keep one Conversation alive during the call so KV/context can be reused;
- * - expose backend diagnostics so we can see whether GPU really engaged.
+ * Current call-build priority is stability on the Galaxy S26 Ultra. The previous GPU-first
+ * path could leave LiteRT-LM half initialised after an Adreno/OpenCL failure and the next
+ * createConversation() returned FAILED_PRECONDITION. Until GPU is proven cleanly on-device,
+ * REBORN uses the CPU backend and automatically rebuilds the engine once if conversation
+ * creation fails.
  */
 object LocalRebornEngine {
     private const val MODEL_NAME = "qwen3-1.7b-int4.litertlm"
@@ -27,6 +26,7 @@ object LocalRebornEngine {
     private var activeBackend: String = "NONE"
     private var lastInitMs: Long = 0
     private var lastGenerationMs: Long = 0
+    private var lastError: String = ""
 
     @JvmStatic
     fun modelFile(context: Context): File {
@@ -44,6 +44,7 @@ object LocalRebornEngine {
     @JvmStatic fun backendName(): String = activeBackend
     @JvmStatic fun lastInitMs(): Long = lastInitMs
     @JvmStatic fun lastGenerationMs(): Long = lastGenerationMs
+    @JvmStatic fun lastError(): String = lastError
 
     @JvmStatic
     @Synchronized
@@ -52,29 +53,9 @@ object LocalRebornEngine {
         if (!isInstalled(context)) throw IllegalStateException("Modelo local Qwen3 não instalado")
         if (engine != null && loadedPath == file.absolutePath) return "READY:$activeBackend"
 
-        close()
+        closeEngineOnly()
         val started = System.currentTimeMillis()
-
-        try {
-            val gpuConfig = EngineConfig(
-                modelPath = file.absolutePath,
-                backend = Backend.GPU(),
-                cacheDir = context.cacheDir.absolutePath
-            )
-            val gpuEngine = Engine(gpuConfig)
-            runBlocking { gpuEngine.initialize() }
-            engine = gpuEngine
-            loadedPath = file.absolutePath
-            activeBackend = "GPU"
-            lastInitMs = System.currentTimeMillis() - started
-            return "READY:GPU"
-        } catch (_: Throwable) {
-            try { engine?.close() } catch (_: Throwable) {}
-            engine = null
-            conversation = null
-            loadedPath = null
-            activeBackend = "NONE"
-        }
+        lastError = ""
 
         val cpuConfig = EngineConfig(
             modelPath = file.absolutePath,
@@ -85,32 +66,44 @@ object LocalRebornEngine {
         runBlocking { cpuEngine.initialize() }
         engine = cpuEngine
         loadedPath = file.absolutePath
-        activeBackend = "CPU"
+        activeBackend = "CPU_STABLE"
         lastInitMs = System.currentTimeMillis() - started
-        return "READY:CPU"
+        return "READY:$activeBackend"
     }
 
-    /** Preload the runtime and create the call conversation before the customer speaks. */
     @JvmStatic
     @Synchronized
     fun warmUp(context: Context): String {
         ensureReady(context)
-        ensureConversation()
+        ensureConversationRecovering(context)
         return "READY:$activeBackend"
     }
 
-    private fun ensureConversation(): Conversation {
+    private fun ensureConversationRecovering(context: Context): Conversation {
         conversation?.let { return it }
-        val e = engine ?: throw IllegalStateException("Motor local indisponível")
-        return e.createConversation().also { conversation = it }
+        var e = engine ?: throw IllegalStateException("Motor local indisponível")
+        try {
+            return e.createConversation().also { conversation = it }
+        } catch (first: Throwable) {
+            lastError = "createConversation: ${first.javaClass.simpleName}: ${first.message ?: ""}"
+            // One hard reset is safer than leaving a native LiteRT-LM engine in an invalid state.
+            closeEngineOnly()
+            ensureReady(context)
+            e = engine ?: throw IllegalStateException("Motor local indisponível após reinício")
+            return try {
+                e.createConversation().also { conversation = it }
+            } catch (second: Throwable) {
+                lastError = "createConversation retry: ${second.javaClass.simpleName}: ${second.message ?: ""}"
+                throw second
+            }
+        }
     }
 
-    /** Persistent call-session generation. This is the fast path used by QwenClient. */
     @JvmStatic
     @Synchronized
     fun generate(context: Context, prompt: String): String {
         ensureReady(context)
-        val c = ensureConversation()
+        val c = ensureConversationRecovering(context)
         val out = StringBuilder()
         val started = System.currentTimeMillis()
         runBlocking {
@@ -120,24 +113,18 @@ object LocalRebornEngine {
         return out.toString().trim()
     }
 
-    /** One-shot inference for diagnostics, without contaminating the live call context. */
+    /** Diagnostics use the same persistent conversation path now: on this LiteRT-LM build,
+     * repeatedly creating disposable conversations can itself trigger FAILED_PRECONDITION.
+     */
     @JvmStatic
     @Synchronized
     fun generateOneShot(context: Context, prompt: String): String {
-        ensureReady(context)
-        val e = engine ?: throw IllegalStateException("Motor local indisponível")
-        val out = StringBuilder()
-        val started = System.currentTimeMillis()
-        runBlocking {
-            e.createConversation().use { c ->
-                c.sendMessageAsync(prompt).collect { chunk -> out.append(chunk) }
-            }
-        }
-        lastGenerationMs = System.currentTimeMillis() - started
-        return out.toString().trim()
+        resetConversation()
+        val answer = generate(context, prompt)
+        resetConversation()
+        return answer
     }
 
-    /** Start a fresh conversation at the beginning/end of each phone call. */
     @JvmStatic
     @Synchronized
     fun resetConversation() {
@@ -145,15 +132,20 @@ object LocalRebornEngine {
         conversation = null
     }
 
-    @JvmStatic
-    @Synchronized
-    fun close() {
+    private fun closeEngineOnly() {
         resetConversation()
         try { engine?.close() } catch (_: Throwable) {}
         engine = null
         loadedPath = null
         activeBackend = "NONE"
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun close() {
+        closeEngineOnly()
         lastInitMs = 0
         lastGenerationMs = 0
+        lastError = ""
     }
 }
