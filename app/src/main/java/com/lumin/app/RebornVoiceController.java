@@ -7,19 +7,12 @@ import android.media.AudioManager;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import java.io.File;
 import java.util.ArrayDeque;
 import java.util.Locale;
 import java.util.Queue;
 
-/**
- * REBORN voice output controller with explicit, measurable routes.
- *
- * Routes:
- * AUTO       -> Samsung Text Call attempt first, then local/acoustic TTS fallback.
- * SAMSUNG    -> Samsung Text Call bridge only.
- * ACOUSTIC   -> speakerphone + communication TTS, useful to prove the full conversation loop.
- * DIGITAL    -> reserved experimental uplink path; never reported as working until proven on-device.
- */
+/** REBORN voice output controller with explicit, measurable routes. */
 public final class RebornVoiceController implements TextToSpeech.OnInitListener {
     public static final String ROUTE_AUTO = "AUTO";
     public static final String ROUTE_SAMSUNG = "SAMSUNG";
@@ -37,6 +30,8 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
     private TextToSpeech tts;
     private boolean ready;
     private boolean forcedSpeaker;
+    private File pendingDigitalFile;
+    private String pendingDigitalUtterance;
 
     private RebornVoiceController(Context context) {
         app = context.getApplicationContext();
@@ -59,7 +54,7 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
         context.getSharedPreferences("sofia_control", Context.MODE_PRIVATE).edit()
                 .putString("voice_route_mode", route).apply();
         save("voice_route", route);
-        state = ROUTE_DIGITAL.equals(route) ? "DIGITAL_UNPROVEN" : "ROUTE_READY";
+        state = ROUTE_DIGITAL.equals(route) ? "DIGITAL_READY_TO_TEST" : "ROUTE_READY";
         publish();
     }
 
@@ -78,13 +73,7 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
         }
 
         if (ROUTE_DIGITAL.equals(route)) {
-            // Important: do not fake success. This marks the test as unavailable until a
-            // device-specific uplink writer is actually proven by the remote handset.
-            state = "DIGITAL_UNPROVEN";
-            save("voice_text", clean);
-            save("voice_route", route);
-            save("voice_error", "Direct GSM uplink injection not yet proven on this device");
-            publish();
+            instance.synthesizeDigital(clean);
             return;
         }
 
@@ -102,6 +91,45 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
 
         synchronized (queue) { queue.offer(clean); }
         instance.drain();
+    }
+
+    private void synthesizeDigital(String clean) {
+        if (!ready || tts == null) {
+            state = "DIGITAL_TTS_NOT_READY";
+            save("voice_error", "TTS ainda não inicializado");
+            publish();
+            return;
+        }
+        try {
+            File dir = new File(app.getCacheDir(), "reborn-digital");
+            if (!dir.exists()) dir.mkdirs();
+            File out = new File(dir, "uplink-" + System.currentTimeMillis() + ".wav");
+            String id = "reborn-digital-" + System.currentTimeMillis();
+            pendingDigitalFile = out;
+            pendingDigitalUtterance = id;
+            currentText = clean;
+            state = "DIGITAL_SYNTHESIZING";
+            save("voice_text", clean);
+            save("voice_route", route);
+            save("digital_uplink_state", "SYNTHESIZING");
+            publish();
+            Bundle params = new Bundle();
+            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id);
+            int r = tts.synthesizeToFile(clean, params, out, id);
+            if (r == TextToSpeech.ERROR) {
+                pendingDigitalFile = null;
+                pendingDigitalUtterance = null;
+                state = "DIGITAL_SYNTH_ERROR";
+                save("voice_error", "synthesizeToFile devolveu ERROR");
+                publish();
+            }
+        } catch (Throwable t) {
+            pendingDigitalFile = null;
+            pendingDigitalUtterance = null;
+            state = "DIGITAL_SYNTH_ERROR";
+            save("voice_error", t.getClass().getSimpleName() + ": " + (t.getMessage() == null ? "" : t.getMessage()));
+            publish();
+        }
     }
 
     private static boolean sendSamsung(Context context, String clean) {
@@ -137,12 +165,37 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
                     .build());
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                 @Override public void onStart(String utteranceId) {
+                    if (utteranceId != null && utteranceId.equals(pendingDigitalUtterance)) {
+                        state = "DIGITAL_SYNTHESIZING";
+                        publish();
+                        return;
+                    }
                     speaking = true;
                     state = ROUTE_ACOUSTIC.equals(route) ? "SPEAKING_ACOUSTIC" : "SPEAKING_LOCAL";
                     save("voice_started_at", String.valueOf(System.currentTimeMillis()));
                     publish();
                 }
                 @Override public void onDone(String utteranceId) {
+                    if (utteranceId != null && utteranceId.equals(pendingDigitalUtterance)) {
+                        final File wav = pendingDigitalFile;
+                        pendingDigitalFile = null;
+                        pendingDigitalUtterance = null;
+                        if (wav == null || !wav.exists() || wav.length() < 44) {
+                            state = "DIGITAL_WAV_INVALID";
+                            save("voice_error", "TTS não criou WAV válido");
+                            publish();
+                            return;
+                        }
+                        state = "DIGITAL_STREAM_STARTING";
+                        publish();
+                        RebornDigitalUplinkBridge.playWav(app, wav, ok -> {
+                            state = ok ? "DIGITAL_LOCAL_STREAM_COMPLETE_REMOTE_UNVERIFIED" : "DIGITAL_STREAM_ERROR";
+                            save("voice_error", ok ? "" : RebornDigitalUplinkBridge.lastError());
+                            publish();
+                            try { wav.delete(); } catch (Throwable ignored) {}
+                        });
+                        return;
+                    }
                     speaking = false;
                     currentText = "";
                     restoreSpeakerIfNeeded();
@@ -152,6 +205,14 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
                     new android.os.Handler(android.os.Looper.getMainLooper()).post(RebornVoiceController.this::drain);
                 }
                 @Override public void onError(String utteranceId) {
+                    if (utteranceId != null && utteranceId.equals(pendingDigitalUtterance)) {
+                        pendingDigitalFile = null;
+                        pendingDigitalUtterance = null;
+                        state = "DIGITAL_SYNTH_ERROR";
+                        save("voice_error", "TTS onError em síntese digital");
+                        publish();
+                        return;
+                    }
                     speaking = false;
                     currentText = "";
                     restoreSpeakerIfNeeded();
@@ -234,7 +295,7 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
 
     public static void onCustomerStartedSpeaking() {
         RebornVoiceController v = instance;
-        if (v != null && v.tts != null) {
+        if (v != null && v.tts != null && !ROUTE_DIGITAL.equals(route)) {
             try { if (v.tts.isSpeaking()) v.tts.stop(); } catch (Throwable ignored) { }
             v.restoreSpeakerIfNeeded();
         }
