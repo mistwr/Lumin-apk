@@ -48,10 +48,10 @@ object RebornDigitalUplinkBridge {
                 server = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).apply { soTimeout = 12_000 }
                 val port = server.localPort
                 val apk = app.applicationInfo.sourceDir
-                val fqcn = "com.lumin.app.RebornDigitalUplinkDaemon"
+                val fqcn = "com.lumin.app.RebornDigitalUplinkDaemonV3"
                 val command = "CLASSPATH='$apk' exec app_process / $fqcn $port ${info.sampleRate} ${info.channels}"
                 stream = adb.openShell(command)
-                state = "DAEMON_STARTED"
+                state = "DAEMON_V3_STARTED"
                 publish(app)
 
                 socket = server.accept().apply {
@@ -81,7 +81,7 @@ object RebornDigitalUplinkBridge {
                                     state = "TELEPHONY_ROUTE_BLOCKED"
                                     lastError = msg
                                 }
-                                msg.startsWith("TRACK_") || msg.contains("BUILD_ERROR") || msg.contains("SET_DEVICE_ERROR") -> {
+                                msg.startsWith("TRACK_") || msg.contains("BUILD_ERROR") || msg.contains("SET_DEVICE_ERROR") || msg.contains("ATTR_ERROR") -> {
                                     state = "TELEPHONY_ROUTE_ERROR"
                                     lastError = msg
                                 }
