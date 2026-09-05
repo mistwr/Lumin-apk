@@ -176,6 +176,11 @@ public class MainActivity extends AppCompatActivity {
         accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         root.addView(accessibility);
 
+        root.addView(sectionTitle("ÁUDIO DE CHAMADA"));
+        Button pcm = navButton("Configurar Wireless ADB / captura PCM");
+        pcm.setOnClickListener(v -> startActivity(new Intent(this, RebornAdbSetupActivity.class)));
+        root.addView(pcm);
+
         root.addView(sectionTitle("CÉREBRO LOCAL"));
         Button install = navButton("Instalar / reinstalar modelo local");
         install.setOnClickListener(v -> startActivity(new Intent(this, SetupActivity.class)));
@@ -195,17 +200,24 @@ public class MainActivity extends AppCompatActivity {
 
     private void showDiagnostics() {
         SharedPreferences d = getSharedPreferences("sofia_diag", MODE_PRIVATE);
+        SharedPreferences c = getSharedPreferences("reborn_central", MODE_PRIVATE);
         String report = "Samsung Bridge: " + (isAccessibilityEnabled() ? "ATIVO" : "INATIVO") +
                 "\nQwen backend: " + LocalRebornEngine.backendName() +
                 "\nQwen init: " + LocalRebornEngine.lastInitMs() + " ms" +
                 "\nÚltima geração: " + LocalRebornEngine.lastGenerationMs() + " ms" +
-                "\nSurface: " + d.getString("surface", "—") +
-                "\nÚltimo cliente: " + d.getString("last_customer", "—") +
-                "\nCaminho: " + d.getString("path", "—") +
-                "\nQwen: " + d.getString("qwen", "—") +
-                "\nSET_TEXT: " + d.getString("set_text", "—") +
-                "\nSEND: " + d.getString("send", "—") +
-                "\nErro: " + d.getString("last_error", "—");
+                "\nPCM: " + c.getString("pcm_capture", "—") +
+                "\nPCM formato: " + c.getInt("pcm_rate", 0) + " Hz / " + c.getInt("pcm_channels", 0) + " ch" +
+                "\nFrames PCM: " + RebornAudioBridge.frames() +
+                "\nSTT: " + c.getString("stt_state", "—") +
+                "\nVoz: " + c.getString("voice_state", "—") + " / " + c.getString("voice_route", "—") +
+                "\nGravação: " + c.getString("recording_path", "—") +
+                "\nCRM: " + c.getString("crm_state", "—") +
+                "\nSurface Samsung: " + d.getString("surface", "—") +
+                "\nÚltimo cliente: " + c.getString("central_customer", d.getString("last_customer", "—")) +
+                "\nCaminho IA: " + c.getString("central_path", d.getString("path", "—")) +
+                "\nErro PCM: " + c.getString("pcm_error", "—") +
+                "\nErro STT: " + c.getString("stt_error", "—") +
+                "\nErro geral: " + d.getString("last_error", "—");
         new android.app.AlertDialog.Builder(this)
                 .setTitle("REBORN · diagnóstico")
                 .setMessage(report)
@@ -229,8 +241,11 @@ public class MainActivity extends AppCompatActivity {
         String brain = LocalRebornEngine.isInstalled(this)
                 ? "Qwen3 1.7B INT4 · " + ("NONE".equals(backend) ? "A AQUECER" : backend)
                 : "Qwen3 1.7B INT4 · NÃO INSTALADO";
-        liveStatus.setText("● Samsung Bridge · " + (isAccessibilityEnabled() ? "ATIVO" : "INATIVO") +
+        SharedPreferences c = getSharedPreferences("reborn_central", MODE_PRIVATE);
+        liveStatus.setText("● REBORN Phone · NATIVO" +
+                "\n● Samsung Bridge · " + (isAccessibilityEnabled() ? "ATIVO" : "INATIVO") +
                 "\n● " + brain +
+                "\n● PCM · " + c.getString("pcm_capture", "NÃO TESTADO") +
                 "\nModo · " + label);
     }
 
