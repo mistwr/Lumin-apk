@@ -35,22 +35,51 @@ object RebornDigitalAudioController {
                 localRecorder.append(frame)
                 frames++
 
-                // As soon as the proven shell VOICE_CALL stream is alive, move STT away from
-                // microphone capture and feed these exact digital call samples to Android's
-                // external-audio SpeechRecognizer path (Android 13+).
+                var sttSamples = frame.samples
+                var sttChannels = frame.channels
+                var leftLevel = 0.0
+                var rightLevel = 0.0
+                var selected = "MIX"
+
+                if (frame.channels == 2) {
+                    val split = RebornStereoChannelSplitter.split(frame)
+                    if (split != null) {
+                        leftLevel = split.leftMeanAbs
+                        rightLevel = split.rightMeanAbs
+                        val pref = app.getSharedPreferences("reborn_audio", Context.MODE_PRIVATE)
+                            .getString("remote_channel", "AUTO") ?: "AUTO"
+
+                        // Do not guess vendor channel mapping permanently. AUTO uses the quieter
+                        // side while REBORN itself is speaking (echo avoidance) and the stronger
+                        // side while listening. LEFT/RIGHT can be locked after a one-call test.
+                        selected = when (pref) {
+                            "LEFT" -> "LEFT"
+                            "RIGHT" -> "RIGHT"
+                            else -> {
+                                if (RebornVoiceController.isSpeaking()) {
+                                    if (leftLevel <= rightLevel) "LEFT" else "RIGHT"
+                                } else {
+                                    if (leftLevel >= rightLevel) "LEFT" else "RIGHT"
+                                }
+                            }
+                        }
+                        sttSamples = if (selected == "LEFT") split.left else split.right
+                        sttChannels = 1
+                    }
+                }
+
                 if (!sttAttached && RebornTranscriptionService.isRunning()) {
                     sttAttached = true
-                    RebornTranscriptionService.enableExternalPcm(app, frame.sampleRate, frame.channels)
+                    RebornTranscriptionService.enableExternalPcm(app, frame.sampleRate, sttChannels)
                 }
-                RebornTranscriptionService.feedPcm(frame.samples, frame.sampleRate, frame.channels)
+                RebornTranscriptionService.feedPcm(sttSamples, frame.sampleRate, sttChannels)
 
-                // Lightweight level telemetry helps distinguish a connected pipe from silence.
                 var sum = 0.0
-                val step = if (frame.samples.size > 4000) 4 else 1
+                val step = if (sttSamples.size > 4000) 4 else 1
                 var n = 0
                 var i = 0
-                while (i < frame.samples.size) {
-                    val v = frame.samples[i].toDouble()
+                while (i < sttSamples.size) {
+                    val v = sttSamples[i].toDouble()
                     sum += v * v
                     n++
                     i += step
@@ -64,6 +93,9 @@ object RebornDigitalAudioController {
                         .putInt("pcm_channels", frame.channels)
                         .putLong("pcm_frames", frames)
                         .putInt("pcm_rms", rms)
+                        .putString("pcm_selected", selected)
+                        .putInt("pcm_left_level", leftLevel.toInt())
+                        .putInt("pcm_right_level", rightLevel.toInt())
                         .putString("pcm_stt", if (RebornTranscriptionService.isUsingExternalPcm()) "VOICE_CALL_PCM" else "ATTACHING")
                         .apply()
                     RebornCallActivity.refreshFromService()
