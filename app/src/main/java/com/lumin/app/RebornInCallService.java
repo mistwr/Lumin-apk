@@ -8,6 +8,7 @@ import android.telecom.VideoProfile;
 public class RebornInCallService extends InCallService {
     private static volatile RebornInCallService instance;
     private static volatile Call activeCall;
+    private static volatile boolean crmFinishedForCall;
 
     public static RebornInCallService get() { return instance; }
     public static Call activeCall() { return activeCall; }
@@ -28,13 +29,14 @@ public class RebornInCallService extends InCallService {
     @Override public void onCallAdded(Call call) {
         super.onCallAdded(call);
         activeCall = call;
+        crmFinishedForCall = false;
         RebornCentral.startSession(this);
-        handleState(call.getState());
+        handleState(call, call.getState());
 
         call.registerCallback(new Call.Callback() {
             @Override public void onStateChanged(Call c, int state) {
                 activeCall = c;
-                handleState(state);
+                handleState(c, state);
                 RebornCallActivity.refreshFromService();
                 if (state == Call.STATE_DISCONNECTED) activeCall = null;
             }
@@ -50,16 +52,24 @@ public class RebornInCallService extends InCallService {
         startActivity(i);
     }
 
-    private void handleState(int state) {
+    private void handleState(Call call, int state) {
         RebornCentral.onCallState(this, state);
         if (state == Call.STATE_ACTIVE) {
             RebornCallAudioController.start(this);
         } else if (state == Call.STATE_DISCONNECTED) {
             RebornCallAudioController.stop();
+            if (!crmFinishedForCall) {
+                crmFinishedForCall = true;
+                RebornCrmController.finish(this, call);
+            }
         }
     }
 
     @Override public void onCallRemoved(Call call) {
+        if (!crmFinishedForCall) {
+            crmFinishedForCall = true;
+            RebornCrmController.finish(this, call);
+        }
         if (activeCall == call) activeCall = null;
         RebornCallAudioController.stop();
         RebornCentral.onCallState(this, Call.STATE_DISCONNECTED);
