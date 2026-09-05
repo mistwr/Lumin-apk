@@ -13,13 +13,14 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import java.util.concurrent.Executors;
 
-/** Simple on-device setup for the proven Wireless ADB -> VOICE_CALL PCM bridge. */
+/** On-device setup for Wireless ADB -> VOICE_CALL PCM + duplex calibration. */
 public class RebornAdbSetupActivity extends AppCompatActivity {
     private EditText pairPort;
     private EditText pairCode;
     private EditText connectHost;
     private EditText connectPort;
     private TextView status;
+    private TextView duplexStatus;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -34,8 +35,7 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         root.setPadding(dp(22), dp(28), dp(22), dp(28));
         root.setBackgroundColor(Color.rgb(4,8,17));
 
-        TextView title = tv("REBORN · Captura PCM", 28, Color.WHITE, true);
-        root.addView(title);
+        root.addView(tv("REBORN · Captura PCM", 28, Color.WHITE, true));
         TextView desc = tv("Liga o REBORN ao Wireless Debugging do próprio Samsung. O pairing é feito uma vez; depois a chave RSA fica guardada na app.", 14, Color.rgb(175,188,215), false);
         desc.setPadding(0, dp(8), 0, dp(14));
         root.addView(desc);
@@ -70,15 +70,45 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         pcm.setOnClickListener(v -> testPcm());
         root.addView(pcm);
 
+        root.addView(label("DUPLEX · CANAL DO CLIENTE"));
+        TextView hint = tv("Em stereo o Samsung pode colocar uplink/downlink em lados diferentes. AUTO tenta separar dinamicamente; se o REBORN se ouvir a si próprio, fixa LEFT ou RIGHT durante uma chamada de teste.", 12, Color.rgb(160,174,205), false);
+        root.addView(hint);
+        LinearLayout channels = new LinearLayout(this);
+        channels.setOrientation(LinearLayout.HORIZONTAL);
+        channels.setWeightSum(3f);
+        channels.addView(channelButton("AUTO", "AUTO"), weight());
+        channels.addView(channelButton("LEFT", "LEFT"), weight());
+        channels.addView(channelButton("RIGHT", "RIGHT"), weight());
+        root.addView(channels);
+        duplexStatus = tv("Duplex: —", 13, Color.rgb(255,198,94), true);
+        duplexStatus.setPadding(0, dp(8), 0, 0);
+        root.addView(duplexStatus);
+
         status = tv("Estado: —", 14, Color.rgb(106,235,183), true);
         status.setPadding(0, dp(18), 0, 0);
         root.addView(status);
 
-        TextView note = tv("Nota: a porta de pairing muda quando abres novamente o diálogo. A porta ADB normal é a que aparece no ecrã principal de Wireless Debugging.", 12, Color.rgb(145,155,180), false);
+        TextView note = tv("A porta de pairing muda quando abres novamente o diálogo. A porta ADB normal é a que aparece no ecrã principal de Wireless Debugging.", 12, Color.rgb(145,155,180), false);
         note.setPadding(0, dp(16), 0, 0);
         root.addView(note);
 
         setContentView(root);
+    }
+
+    private Button channelButton(String label, String value) {
+        Button b = button(label);
+        b.setOnClickListener(v -> {
+            getSharedPreferences("reborn_audio", MODE_PRIVATE).edit().putString("remote_channel", value).apply();
+            refresh();
+            toast("Canal remoto: " + value);
+        });
+        return b;
+    }
+
+    private LinearLayout.LayoutParams weight() {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(52), 1f);
+        p.setMargins(dp(3), dp(6), dp(3), 0);
+        return p;
     }
 
     private void loadSaved() {
@@ -128,6 +158,7 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
                 String s = RebornAudioBridge.state();
                 long frames = RebornAudioBridge.frames();
                 status.setText("Estado: " + s + " · frames " + frames + (frames > 0 ? " ✅" : ""));
+                refreshDuplex();
                 RebornAudioEngine.stop();
             }, 5000L);
         } catch (Throwable t) {
@@ -138,6 +169,17 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
     private void refresh() {
         String pcm = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("pcm_capture", "IDLE");
         status.setText("Estado: " + pcm);
+        refreshDuplex();
+    }
+
+    private void refreshDuplex() {
+        String pref = getSharedPreferences("reborn_audio", MODE_PRIVATE).getString("remote_channel", "AUTO");
+        android.content.SharedPreferences p = getSharedPreferences("reborn_central", MODE_PRIVATE);
+        int l = p.getInt("pcm_left_level", 0);
+        int r = p.getInt("pcm_right_level", 0);
+        String selected = p.getString("pcm_selected", "—");
+        String stt = p.getString("stt_input", "—");
+        duplexStatus.setText("Duplex: " + pref + " · usado " + selected + " · L " + l + " / R " + r + " · STT " + stt);
     }
 
     private int parsePort(String s) {
