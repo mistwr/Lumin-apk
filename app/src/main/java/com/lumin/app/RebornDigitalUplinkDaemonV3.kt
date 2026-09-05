@@ -8,6 +8,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Looper
 import android.os.Process
 import java.io.BufferedInputStream
 import java.io.BufferedWriter
@@ -224,40 +225,35 @@ object RebornDigitalUplinkDaemonV3 {
     }
 
     private fun obtainSystemContext(): Pair<Context?, String> {
-        val errors = ArrayList<String>()
-        var thread: Any? = null
-        val at = runCatching { Class.forName("android.app.ActivityThread") }
-            .getOrElse { return null to "ActivityThread:${it.javaClass.simpleName}:${it.message ?: ""}" }
+        val looperState = runCatching {
+            if (Looper.myLooper() == null) Looper.prepareMainLooper()
+            "LOOPER_READY"
+        }.getOrElse { "LOOPER_FAIL:${it.javaClass.simpleName}:${it.message ?: ""}" }
+
+        var firstError = ""
+        runCatching {
+            val at = Class.forName("android.app.ActivityThread")
+            val systemMain = at.getDeclaredMethod("systemMain").apply { isAccessible = true }
+            val thread = systemMain.invoke(null)
+            val getSystemContext = at.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
+            val c = getSystemContext.invoke(thread) as? Context
+            if (c != null) return c to "$looperState:SYSTEM_MAIN"
+        }.onFailure {
+            firstError = "SYSTEM_MAIN_FAIL:${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}"
+        }
 
         runCatching {
-            val m = at.getDeclaredMethod("systemMain").apply { isAccessible = true }
-            thread = m.invoke(null)
-            val g = at.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
-            val c = g.invoke(thread) as? Context
-            if (c != null) return c to "SYSTEM_MAIN_GET_SYSTEM_CONTEXT"
-        }.onFailure { errors += "systemMain:${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}" }
-
-        runCatching {
+            val at = Class.forName("android.app.ActivityThread")
             val current = at.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null)
             if (current != null) {
-                thread = current
-                val g = at.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
-                val c = g.invoke(current) as? Context
-                if (c != null) return c to "CURRENT_THREAD_GET_SYSTEM_CONTEXT"
+                val getSystemContext = at.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
+                val c = getSystemContext.invoke(current) as? Context
+                if (c != null) return c to "$looperState:CURRENT_ACTIVITY_THREAD"
             }
-        }.onFailure { errors += "current:${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}" }
+        }.onFailure {
+            return null to "$looperState:$firstError:CURRENT_FAIL:${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}"
+        }
 
-        runCatching {
-            val th = thread ?: throw IllegalStateException("no ActivityThread")
-            val ci = Class.forName("android.app.ContextImpl")
-            val m = ci.declaredMethods.firstOrNull {
-                it.name == "createSystemContext" && it.parameterTypes.size == 1
-            } ?: throw NoSuchMethodException("ContextImpl.createSystemContext")
-            m.isAccessible = true
-            val c = m.invoke(null, th) as? Context
-            if (c != null) return c to "CONTEXT_IMPL_CREATE_SYSTEM_CONTEXT"
-        }.onFailure { errors += "contextImpl:${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}" }
-
-        return null to errors.joinToString("|").take(1400)
+        return null to "$looperState:$firstError"
     }
 }
