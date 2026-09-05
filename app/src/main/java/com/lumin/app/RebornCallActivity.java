@@ -11,18 +11,25 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 public class RebornCallActivity extends AppCompatActivity implements RebornCentral.Listener {
     private static RebornCallActivity current;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private TextView state, number, ai, pipeline, transcript, reply, voice, voiceRoute, voiceVerify, digital;
+    private volatile boolean refreshPending = false;
+    private TextView state, number, ai, pipeline, transcript, reply, voice, voiceRoute, voiceVerify, digital, probe;
     private boolean muted = false;
     private boolean speaker = false;
 
     public static void refreshFromService() {
         RebornCallActivity a = current;
-        if (a != null) a.ui.post(a::refresh);
+        if (a == null || a.refreshPending) return;
+        a.refreshPending = true;
+        a.ui.postDelayed(() -> {
+            a.refreshPending = false;
+            if (current == a && !a.isFinishing()) a.refresh();
+        }, 120L);
     }
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -43,10 +50,11 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
     @Override protected void onDestroy() {
         if (current == this) current = null;
         RebornCentral.setListener(null);
+        ui.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
 
-    @Override public void onCentralChanged() { ui.post(this::refresh); }
+    @Override public void onCentralChanged() { refreshFromService(); }
 
     private void buildUi() {
         ScrollView scroll = new ScrollView(this);
@@ -66,6 +74,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         voice = t("Voz: IDLE", 13, Color.rgb(255,198,94), false); voice.setGravity(Gravity.CENTER); root.addView(voice);
         voiceRoute = t("Rota de voz: AUTO", 13, Color.rgb(148,160,194), true); voiceRoute.setGravity(Gravity.CENTER); root.addView(voiceRoute);
         digital = t("Digital uplink: IDLE", 12, Color.rgb(255,198,94), true); digital.setGravity(Gravity.CENTER); digital.setPadding(0, dp(3), 0, dp(3)); root.addView(digital);
+        probe = t("Audio stack: IDLE", 12, Color.rgb(255,198,94), false); probe.setGravity(Gravity.CENTER); probe.setPadding(dp(6), dp(3), dp(6), dp(3)); root.addView(probe);
         voiceVerify = t("Verificação remota: IDLE", 13, Color.rgb(148,160,194), true); voiceVerify.setGravity(Gravity.CENTER); voiceVerify.setPadding(0, dp(2), 0, dp(6)); root.addView(voiceVerify);
 
         LinearLayout controls1 = row();
@@ -96,11 +105,33 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         Button testVoice = b("TESTE REMOTO: provar se o outro telefone ouve");
         LinearLayout.LayoutParams testP = new LinearLayout.LayoutParams(-1, dp(62)); testP.topMargin = dp(10); testVoice.setLayoutParams(testP);
         testVoice.setOnClickListener(v -> {
+            String ds = RebornDigitalUplinkBridge.state();
+            if ("PREPARING".equals(ds) || "DAEMON_STARTED".equals(ds) || "STREAMING".equals(ds)) {
+                Toast.makeText(this, "Teste digital já está em curso", Toast.LENGTH_SHORT).show();
+                return;
+            }
             RebornVoiceVerifier.start(this, RebornVoiceController.route());
             RebornVoiceController.speak(this, "Teste REBORN. Se me está a ouvir no outro telefone, diga agora: sim, ouvi.");
-            refresh();
+            refreshFromService();
         });
         root.addView(testVoice);
+
+        Button audioProbe = b("ANALISAR AUDIO STACK DURANTE A CHAMADA");
+        LinearLayout.LayoutParams probeP = new LinearLayout.LayoutParams(-1, dp(62)); probeP.topMargin = dp(10); audioProbe.setLayoutParams(probeP);
+        audioProbe.setOnClickListener(v -> {
+            Call c = RebornInCallService.activeCall();
+            if (c == null || c.getState() != Call.STATE_ACTIVE) {
+                Toast.makeText(this, "Faz a análise com a chamada ativa", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (RebornAudioRouteProbe.isRunning()) {
+                Toast.makeText(this, "Análise já está em curso", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            RebornAudioRouteProbe.start(this);
+            refreshFromService();
+        });
+        root.addView(audioProbe);
 
         TextView trTitle = t("TRANSCRIÇÃO AO VIVO", 12, Color.rgb(148,160,194), true); trTitle.setPadding(0, dp(24), 0, dp(8)); root.addView(trTitle);
         transcript = t("À espera de voz…", 15, Color.rgb(225,230,242), false); transcript.setPadding(dp(14), dp(14), dp(14), dp(14)); transcript.setBackgroundColor(Color.rgb(14,22,39)); root.addView(transcript, new LinearLayout.LayoutParams(-1, -2));
@@ -108,11 +139,11 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         reply = t("A aguardar cliente…", 17, Color.rgb(106,235,183), true); reply.setPadding(dp(14), dp(14), dp(14), dp(14)); reply.setBackgroundColor(Color.rgb(14,22,39)); root.addView(reply, new LinearLayout.LayoutParams(-1, -2));
         Button speak = b("Falar resposta agora"); LinearLayout.LayoutParams full = new LinearLayout.LayoutParams(-1, dp(62)); full.topMargin = dp(12); speak.setLayoutParams(full); speak.setOnClickListener(v -> { String text = RebornCentral.lastReply(); if (text != null && !text.trim().isEmpty()) RebornVoiceController.speak(this, text.trim()); }); root.addView(speak);
 
-        TextView note = t("DIGITAL EXP agora envia o WAV do TTS para um AudioTrack lançado por ADB shell com STREAM_VOICE_CALL. O estado STREAM_COMPLETE prova apenas que o Samsung aceitou o áudio localmente; só fica REMOTE HEARD quando o outro telefone confirmar.", 12, Color.rgb(145,155,180), false); note.setGravity(Gravity.CENTER); note.setPadding(0, dp(18), 0, 0); root.addView(note);
+        TextView note = t("O Digital EXP continua não confirmado no GSM. O novo analisador recolhe AudioPolicy/AudioFlinger pelo shell durante a chamada para descobrir o caminho real de RX/TX no Samsung. A interface limita atualizações para evitar o bloqueio/ANR visto nos testes anteriores.", 12, Color.rgb(145,155,180), false); note.setGravity(Gravity.CENTER); note.setPadding(0, dp(18), 0, 0); root.addView(note);
         setContentView(scroll);
     }
 
-    private void setVoiceRoute(String route) { RebornVoiceVerifier.cancel(); RebornVoiceController.setRoute(this, route); refresh(); }
+    private void setVoiceRoute(String route) { RebornVoiceVerifier.cancel(); RebornVoiceController.setRoute(this, route); refreshFromService(); }
 
     private void refresh() {
         Call c = RebornInCallService.activeCall();
@@ -136,6 +167,9 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         long bytes = getSharedPreferences("reborn_central", MODE_PRIVATE).getLong("digital_uplink_bytes", 0L);
         String derr = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("digital_uplink_error", "");
         digital.setText("Digital uplink: " + d + " · " + bytes + " bytes" + (derr == null || derr.isEmpty() ? "" : " · " + derr));
+        String ps = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("audio_probe_state", "IDLE");
+        String pm = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("audio_probe_summary", "");
+        probe.setText("Audio stack: " + ps + (pm == null || pm.isEmpty() ? "" : "\n" + pm));
         voiceVerify.setText("Verificação remota: " + RebornVoiceVerifier.state() + (RebornVoiceVerifier.route().isEmpty() ? "" : " · " + RebornVoiceVerifier.route()));
     }
 
