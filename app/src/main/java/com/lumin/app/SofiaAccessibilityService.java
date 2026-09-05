@@ -36,6 +36,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private SharedPreferences diag;
     private SharedPreferences control;
     private long lastTextCallReadyAt = 0L;
+    private long lastAutoOpenAttemptAt = 0L;
     private boolean autoIntroSent = false;
 
     private final BroadcastReceiver commandReceiver = new BroadcastReceiver() {
@@ -67,13 +68,14 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
         AccessibilityNodeInfo edit = findEditable(root);
         if (edit == null) {
+            if (tryOpenTextCall(root)) return;
             if (lastTextCallReadyAt > 0L && System.currentTimeMillis() - lastTextCallReadyAt > 5000L) {
                 autoIntroSent = false;
                 lastCustomer = "";
                 transcript = "";
                 memory.setLastAssistant("");
             }
-            if (System.currentTimeMillis() - lastTextCallReadyAt > 2500L) log("surface", "Samsung aberto; à espera do campo Text Call");
+            if (System.currentTimeMillis() - lastTextCallReadyAt > 2500L) log("surface", "Samsung aberto; a procurar Text Call automaticamente");
             return;
         }
         lastTextCallReadyAt = System.currentTimeMillis();
@@ -131,6 +133,41 @@ public class SofiaAccessibilityService extends AccessibilityService {
         });
     }
 
+    private boolean tryOpenTextCall(AccessibilityNodeInfo root) {
+        long now = System.currentTimeMillis();
+        if (now - lastAutoOpenAttemptAt < 1200L) return false;
+        AccessibilityNodeInfo target = findTextCallEntry(root);
+        if (target == null) return false;
+        AccessibilityNodeInfo clickable = clickableSelfOrParent(target);
+        if (clickable == null) return false;
+        lastAutoOpenAttemptAt = now;
+        boolean clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+        log("auto_open", clicked ? "TEXT_CALL_CLICKED" : "TEXT_CALL_CLICK_FAILED");
+        if (clicked) {
+            main.postDelayed(() -> {
+                AccessibilityNodeInfo next = findSamsungRoot();
+                if (next != null && findEditable(next) != null) log("surface", "TEXT_CALL_READY_AUTO");
+            }, 700);
+        }
+        return clicked;
+    }
+
+    private AccessibilityNodeInfo findTextCallEntry(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        String text = lower(node.getText());
+        String desc = lower(node.getContentDescription());
+        String id = lower(node.getViewIdResourceName());
+        boolean match = text.contains("chamada de texto") || text.contains("text call") || text.contains("bixby text call") ||
+                desc.contains("chamada de texto") || desc.contains("text call") || desc.contains("bixby text call") ||
+                id.contains("text_call") || id.contains("bixby_text_call");
+        if (match) return node;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo r = findTextCallEntry(node.getChild(i));
+            if (r != null) return r;
+        }
+        return null;
+    }
+
     private void handleGeneratedReply(String reply, boolean handoff, String stage, String mode) {
         memory.setLastAssistant(reply);
         control.edit().putString("suggested_reply", reply).apply();
@@ -179,10 +216,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 l.equals("escrever") || l.contains("chamada de texto") || l.equals("mais") ||
                 l.equals("repetir") || l.equals("reproduzir") || l.equals("parar") || l.equals("cancelar") ||
                 l.equals("enviar") || l.equals("responder") || l.equals("voltar") || l.equals("fechar") ||
-                l.contains("urgente") || l.contains("liga-lhe mais tarde") || l.contains("quem fala") ||
-                l.contains("mensagem sugerida") || l.contains("sugestão") || l.contains("assistente de chamada") ||
-                l.matches("\\d{1,2}:\\d{2}") || l.matches("\\d{1,2}:\\d{2}:\\d{2}") ||
-                l.contains("minutos") || l.contains("segundos");
+                l.contains("urgente") || l.contains("ligar-lhe mais tarde") || l.contains("ligar lhe mais tarde") ||
+                l.contains("quem fala") || l.contains("mensagem sugerida") || l.contains("sugestão") ||
+                l.contains("assistente de chamada") || l.contains("assistente de voz") ||
+                l.contains("converter a sua voz em texto") || l.contains("se quiser continuar") ||
+                l.contains("mantenha-se em linha") || l.matches("\\d{1,2}:\\d{2}") ||
+                l.matches("\\d{1,2}:\\d{2}:\\d{2}") || l.contains("minutos") || l.contains("segundos");
     }
 
     private void collectTexts(AccessibilityNodeInfo node, List<String> out, AccessibilityNodeInfo edit) {
@@ -213,7 +252,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 memory.setLastAssistant(reply);
                 control.edit().putString("suggested_reply", "").apply();
             }
-            main.postDelayed(() -> pressSend(reply, 0), 260);
+            main.postDelayed(() -> pressSend(reply, 0), 300);
         });
     }
 
@@ -229,7 +268,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (clickable != null) {
                 boolean clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                 log("send", clicked ? "CLICK_SENT" : "CLICK_FAILED");
-                main.postDelayed(() -> verifySent(expectedReply, 1), 450);
+                main.postDelayed(() -> verifySent(expectedReply, 1), 500);
                 return;
             }
 
@@ -237,7 +276,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             send.getBoundsInScreen(r);
             if (!r.isEmpty()) {
                 tapBounds(r, "GEOMETRY_TAP");
-                main.postDelayed(() -> verifySent(expectedReply, 1), 450);
+                main.postDelayed(() -> verifySent(expectedReply, 1), 500);
                 return;
             }
         }
@@ -245,7 +284,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (attempt <= 1 && edit != null && Build.VERSION.SDK_INT >= 30) {
             boolean enter = edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
             log("send", enter ? "IME_ENTER" : "IME_ENTER_FAILED");
-            main.postDelayed(() -> verifySent(expectedReply, 2), 400);
+            main.postDelayed(() -> verifySent(expectedReply, 2), 450);
             return;
         }
 
@@ -254,9 +293,15 @@ public class SofiaAccessibilityService extends AccessibilityService {
             send.getBoundsInScreen(r);
             if (!r.isEmpty()) {
                 tapBounds(r, "GESTURE_SEND");
-                main.postDelayed(() -> verifySent(expectedReply, 3), 500);
+                main.postDelayed(() -> verifySent(expectedReply, 3), 550);
                 return;
             }
+        }
+
+        if (edit != null) {
+            tapSendRightOfEditor(edit);
+            main.postDelayed(() -> verifySent(expectedReply, 3), 550);
+            return;
         }
         log("send", "FAILED_NO_SEND_ACTION");
     }
@@ -267,6 +312,20 @@ public class SofiaAccessibilityService extends AccessibilityService {
         GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 80);
         boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
         log("send", dispatched ? label : label + "_FAILED");
+    }
+
+    private void tapSendRightOfEditor(AccessibilityNodeInfo edit) {
+        Rect r = new Rect();
+        edit.getBoundsInScreen(r);
+        if (r.isEmpty()) { log("send", "EDITOR_BOUNDS_EMPTY"); return; }
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        float x = Math.min(screenWidth - dp(28), r.right + dp(34));
+        float y = r.centerY();
+        Path path = new Path();
+        path.moveTo(x, y);
+        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 90);
+        boolean dispatched = dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
+        log("send", dispatched ? "EDITOR_RIGHT_FALLBACK" : "EDITOR_RIGHT_FALLBACK_FAILED");
     }
 
     private AccessibilityNodeInfo findSendButtonNearEditor(AccessibilityNodeInfo root, AccessibilityNodeInfo edit) {
@@ -284,12 +343,13 @@ public class SofiaAccessibilityService extends AccessibilityService {
         if (node == null) return;
         Rect r = new Rect();
         node.getBoundsInScreen(r);
-        if (!r.isEmpty() && node.isClickable()) {
+        AccessibilityNodeInfo clickable = clickableSelfOrParent(node);
+        if (!r.isEmpty() && clickable != null) {
             int cx = r.centerX();
             int cy = r.centerY();
             boolean rightSide = cx >= editor.centerX();
-            boolean sameRow = cy >= editor.top - 80 && cy <= editor.bottom + 80;
-            boolean sensibleSize = r.width() >= 32 && r.height() >= 32 && r.width() <= 260 && r.height() <= 260;
+            boolean sameRow = cy >= editor.top - dp(70) && cy <= editor.bottom + dp(70);
+            boolean sensibleSize = r.width() >= dp(20) && r.height() >= dp(20) && r.width() <= dp(180) && r.height() <= dp(180);
             if (rightSide && sameRow && sensibleSize) {
                 int dx = Math.abs(cx - editor.right);
                 int dy = Math.abs(cy - editor.centerY());
@@ -300,9 +360,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 }
             }
         }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            findSendCandidateRecursive(node.getChild(i), editor, best, bestScore);
-        }
+        for (int i = 0; i < node.getChildCount(); i++) findSendCandidateRecursive(node.getChild(i), editor, best, bestScore);
     }
 
     private void verifySent(String expectedReply, int nextAttempt) {
@@ -364,11 +422,12 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private AccessibilityNodeInfo findSendButton(AccessibilityNodeInfo node) {
         if (node == null) return null;
-        String text = node.getText() == null ? "" : node.getText().toString().toLowerCase();
-        String desc = node.getContentDescription() == null ? "" : node.getContentDescription().toString().toLowerCase();
-        String id = node.getViewIdResourceName() == null ? "" : node.getViewIdResourceName().toLowerCase();
+        String text = lower(node.getText());
+        String desc = lower(node.getContentDescription());
+        String id = lower(node.getViewIdResourceName());
         if (text.contains("enviar") || text.equals("send") || desc.contains("enviar") || desc.contains("send") ||
-                id.contains("send") || id.contains("enter") || id.contains("text_call_send")) return node;
+                desc.contains("mensagem") || id.contains("send") || id.contains("enter") || id.contains("text_call_send") ||
+                id.contains("message_send")) return node;
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo r = findSendButton(node.getChild(i));
             if (r != null) return r;
@@ -406,6 +465,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
         diag.edit().putString(key, value == null ? "" : value).putLong("updated", System.currentTimeMillis()).apply();
     }
 
+    private String lower(CharSequence s) { return s == null ? "" : s.toString().toLowerCase(); }
+    private String lower(String s) { return s == null ? "" : s.toLowerCase(); }
+    private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
     private String safe(String s) { return s == null ? "" : s.replace('\n', ' '); }
 
     @Override public void onInterrupt() { log("service", "INTERRUPTED"); }
