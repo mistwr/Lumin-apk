@@ -9,17 +9,18 @@ public final class RebornAudioBridge {
     private static volatile int sampleRate = 0;
     private static volatile int channels = 0;
     private static Context app;
+    private static volatile long lastPersistAt = 0L;
 
     private RebornAudioBridge() {}
 
     public static void init(Context context) {
         app = context.getApplicationContext();
-        save();
+        persist();
     }
 
     public static void onState(String value) {
         state = value == null ? "" : value;
-        save();
+        persist();
         RebornCallActivity.refreshFromService();
     }
 
@@ -28,11 +29,19 @@ public final class RebornAudioBridge {
         sampleRate = rate;
         channels = ch;
         state = "PCM_ACTIVE";
-        save();
-        if ((frames % 25L) == 0L) RebornCallActivity.refreshFromService();
+
+        // IMPORTANT: PCM can arrive ~50 times/sec. Writing SharedPreferences on every frame
+        // was saturating Android's preference/disk queue and contributed to call-screen ANRs.
+        // Keep counters in memory and persist/refresh at most ~2 times/sec.
+        long now = System.currentTimeMillis();
+        if (now - lastPersistAt >= 500L) {
+            lastPersistAt = now;
+            persist();
+            RebornCallActivity.refreshFromService();
+        }
     }
 
-    private static void save() {
+    private static void persist() {
         Context c = app;
         if (c == null) return;
         c.getSharedPreferences("reborn_central", Context.MODE_PRIVATE).edit()
