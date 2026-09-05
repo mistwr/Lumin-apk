@@ -10,6 +10,8 @@ import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.net.InetAddress
 import java.net.Socket
 import java.util.concurrent.TimeUnit
@@ -51,8 +53,6 @@ object RebornSamsungCapabilityDaemon {
                 emit("CONTEXT_FALLBACK=SHELL_COMMANDS")
             }
 
-            // Android 16 on this Samsung does not expose `cmd package check-permission`.
-            // Read com.android.shell's own package grant state instead (UID 2000).
             val shellDump = shellLines("dumpsys package com.android.shell", 900)
             perms.forEach { p -> emit("SHELL_PERMISSION $p=${permissionFromPackageDump(shellDump, p)}") }
 
@@ -79,7 +79,9 @@ object RebornSamsungCapabilityDaemon {
                 "com.samsung.android.knox.custom.SystemManager",
                 "com.samsung.android.knox.kpcc.KPCCManager",
                 "com.samsung.android.telecom.SemTelecomManager",
-                "com.samsung.android.telephony.SemTelephonyManager"
+                "com.samsung.android.telephony.SemTelephonyManager",
+                "com.android.internal.telephony.ISemTelephony",
+                "com.sec.sve.ISecVideoEngineService"
             )
             classes.forEach { name -> emit("CLASS $name=${if (classExists(name)) "PRESENT" else "ABSENT"}") }
 
@@ -87,6 +89,22 @@ object RebornSamsungCapabilityDaemon {
                 AudioManager::class.java.getDeclaredMethod("getCallUplinkInjectionAudioTrack", android.media.AudioFormat::class.java)
             }.isSuccess
             emit("API getCallUplinkInjectionAudioTrack=${if (official) "PRESENT" else "ABSENT"}")
+
+            // Read-only reflection: list signatures only; no target method is invoked.
+            val reflectTargets = listOf(
+                "com.samsung.android.telecom.SemTelecomManager",
+                "com.samsung.android.knox.custom.SystemManager",
+                "com.samsung.android.knox.kpcc.KPCCManager",
+                "com.android.internal.telephony.ISemTelephony",
+                "com.sec.sve.ISecVideoEngineService",
+                "android.media.AudioManager",
+                "android.telecom.TelecomManager"
+            )
+            val reflectKeys = listOf(
+                "call", "audio", "voice", "uplink", "downlink", "inject", "assistant", "telecom", "phone",
+                "mute", "route", "speaker", "record", "ring", "ims", "volte", "media", "device", "communication"
+            )
+            reflectTargets.forEach { target -> scanMethods(target, reflectKeys, ::emit) }
 
             shellLines("service list", 260).filter { line ->
                 val x = line.lowercase()
@@ -110,8 +128,6 @@ object RebornSamsungCapabilityDaemon {
                 .filter { containsAny(it, audioKeys) }
                 .take(170).forEach { emit("AUDIO_DUMPSYS ${compact(it)}") }
 
-            // AudioPolicy is the gate that refused all ordinary V3 AudioTracks. Read its
-            // declared mixes/routes/profiles to see whether Samsung exposes a call/uplink mix.
             val policyKeys = listOf("call", "voice", "telephony", "uplink", "downlink", "assistant", "mix", "remote_submix", "direct", "route", "inject")
             shellLines("dumpsys media.audio_policy", 1200)
                 .filter { containsAny(it, policyKeys) }
@@ -126,14 +142,34 @@ object RebornSamsungCapabilityDaemon {
                 .filter { containsAny(it, telecomKeys) }
                 .take(150).forEach { emit("TELECOM_DUMPSYS ${compact(it)}") }
 
-            // Read-only Samsung telephony/IMS surfaces that may matter later.
-            listOf("phone", "telecom", "audio", "imms", "epdgService", "SveService", "enterprise_policy", "edm_proxy").forEach { svc ->
+            listOf("phone", "telecom", "audio", "imms", "epdgService", "SveService", "enterprise_policy", "edm_proxy", "isemtelephony").forEach { svc ->
                 val r = shell("service check ${q(svc)}")
                 emit("SERVICE_CHECK $svc=${compact(r).take(180)}")
             }
 
             emit("DONE")
         }
+    }
+
+    private fun scanMethods(className: String, keys: List<String>, emit: (String) -> Unit) {
+        val c = runCatching { Class.forName(className) }.getOrElse {
+            emit("METHOD_SCAN $className=ABSENT")
+            return
+        }
+        val methods = LinkedHashMap<String, Method>()
+        runCatching { c.declaredMethods }.getOrDefault(emptyArray()).forEach { methods[methodSignature(it)] = it }
+        runCatching { c.methods }.getOrDefault(emptyArray()).forEach { methods[methodSignature(it)] = it }
+
+        val matches = methods.keys.filter { sig -> containsAny(sig, keys) }.sorted().take(90)
+        emit("METHOD_SCAN $className count=${matches.size}")
+        matches.forEach { emit("METHOD $className#$it") }
+    }
+
+    private fun methodSignature(m: Method): String {
+        val mods = Modifier.toString(m.modifiers)
+        val params = m.parameterTypes.joinToString(",") { it.typeName.substringAfterLast('.') }
+        val ret = m.returnType.typeName.substringAfterLast('.')
+        return compact("$mods $ret ${m.name}($params)")
     }
 
     private fun permissionFromPackageDump(lines: List<String>, permission: String): String {
@@ -145,7 +181,6 @@ object RebornSamsungCapabilityDaemon {
             return if (exact.contains("granted=true")) "GRANTED" else "DENIED"
         }
 
-        // Static/signature permissions often appear simply under grantedPermissions.
         var inGranted = false
         for (line in lines) {
             val t = line.trim()
