@@ -26,6 +26,7 @@ public class SofiaCallOverlay {
     private TextView customer;
     private TextView reply;
     private TextView transcript;
+    private TextView phase;
     private boolean added = false;
 
     public SofiaCallOverlay(AccessibilityService service) {
@@ -35,20 +36,12 @@ public class SofiaCallOverlay {
         this.diag = service.getSharedPreferences("sofia_diag", AccessibilityService.MODE_PRIVATE);
     }
 
-    public void start() {
-        build();
-        main.post(refresh);
-    }
-
-    public void stop() {
-        main.removeCallbacks(refresh);
-        hide();
-    }
+    public void start() { build(); main.post(refresh); }
+    public void stop() { main.removeCallbacks(refresh); hide(); }
 
     public void onShortcutChanged(boolean enabled) {
         diag.edit().putString("shortcut", enabled ? "SOFIA_VISIBLE" : "SOFIA_HIDDEN").apply();
-        if (!enabled) hide();
-        else if (isSamsungTextCallOpenNow()) show();
+        if (!enabled) hide(); else if (isSamsungTextCallOpenNow()) show();
     }
 
     private void build() {
@@ -74,17 +67,18 @@ public class SofiaCallOverlay {
         panel.addView(header);
 
         status = text("SOFIA · AUTO · IA READY", 14, Color.rgb(106,235,183), true);
-        status.setPadding(0, dp(22), 0, dp(8));
+        status.setPadding(0, dp(22), 0, dp(4));
         panel.addView(status);
+        phase = text("A preparar chamada…", 12, Color.rgb(255,198,94), true);
+        phase.setPadding(0, 0, 0, dp(12));
+        panel.addView(phase);
 
-        TextView customerTitle = text("CLIENTE", 11, Color.rgb(148,160,194), true);
-        panel.addView(customerTitle);
+        panel.addView(text("CLIENTE", 11, Color.rgb(148,160,194), true));
         customer = text("À espera do cliente…", 24, Color.WHITE, true);
         customer.setPadding(0, dp(5), 0, dp(22));
         panel.addView(customer);
 
-        TextView replyTitle = text("RESPOSTA SOFIA", 11, Color.rgb(148,160,194), true);
-        panel.addView(replyTitle);
+        panel.addView(text("RESPOSTA SOFIA", 11, Color.rgb(148,160,194), true));
         reply = text("A ouvir…", 20, Color.rgb(106,235,183), true);
         reply.setPadding(0, dp(5), 0, dp(18));
         panel.addView(reply);
@@ -96,11 +90,7 @@ public class SofiaCallOverlay {
         Button manual = smallButton("FALAR EU");
         auto.setOnClickListener(v -> setMode("AUTO"));
         assisted.setOnClickListener(v -> setMode("ASSISTED"));
-        manual.setOnClickListener(v -> {
-            setMode("MANUAL");
-            SofiaShortcutController.setEnabled(control, false);
-            hide();
-        });
+        manual.setOnClickListener(v -> { setMode("MANUAL"); SofiaShortcutController.setEnabled(control, false); hide(); });
         buttons.addView(auto, weight());
         buttons.addView(assisted, weight());
         buttons.addView(manual, weight());
@@ -118,7 +108,6 @@ public class SofiaCallOverlay {
         foot.setGravity(Gravity.CENTER);
         foot.setPadding(0, dp(24), 0, 0);
         panel.addView(foot);
-
         panel.setTag(scroll);
     }
 
@@ -130,16 +119,23 @@ public class SofiaCallOverlay {
 
             if (added) {
                 String mode = control.getString("mode", "AUTO");
-                String label = "ASSISTED".equals(mode) ? "ASSISTIDO" : mode;
+                String label = "ASSISTED".equals(mode) ? "ASSISTIDO" : ("MANUAL".equals(mode) ? "FALAR EU" : mode);
                 String qwen = diag.getString("qwen", "—");
                 String ai = qwen.startsWith("OK") || qwen.startsWith("CALL READY") || qwen.startsWith("READY") ? "ONLINE" : (qwen.startsWith("ERRO") ? "OFFLINE" : "READY");
                 status.setText("SOFIA · " + label + " · IA " + ai);
+
+                String state = control.getString("turn_state", "IDLE");
+                phase.setText(stateLabel(state));
 
                 String c = control.getString("live_customer", "");
                 customer.setText(c.isEmpty() ? "À espera do cliente…" : "“" + c + "”");
 
                 String r = control.getString("suggested_reply", "");
-                reply.setText(r.isEmpty() ? "A ouvir e a pensar…" : r);
+                if (!r.isEmpty()) reply.setText(r);
+                else if ("THINKING".equals(state)) reply.setText("A pensar…");
+                else if ("SENDING".equals(state)) reply.setText("A enviar pela Samsung…");
+                else if ("STABILIZING".equals(state)) reply.setText("A confirmar o que o cliente disse…");
+                else reply.setText("A ouvir…");
 
                 String tr = control.getString("live_transcript", "");
                 transcript.setText(tr.isEmpty() ? "À espera de voz…" : tr);
@@ -147,6 +143,16 @@ public class SofiaCallOverlay {
             main.postDelayed(this, 250);
         }
     };
+
+    private String stateLabel(String state) {
+        if ("STABILIZING".equals(state)) return "● A confirmar frase do cliente";
+        if ("THINKING".equals(state)) return "● Cérebro REBORN a pensar";
+        if ("SENDING".equals(state)) return "● A escrever/enviar no Samsung Text Call";
+        if ("WAITING_REMOTE".equals(state)) return "● Resposta enviada · à espera do cliente";
+        if ("MANUAL".equals(state)) return "● Controlo manual";
+        if ("LISTENING".equals(state)) return "● A ouvir o cliente";
+        return "● Samsung Bridge pronto";
+    }
 
     private boolean isSamsungTextCallOpenNow() {
         try {
@@ -171,15 +177,11 @@ public class SofiaCallOverlay {
     private boolean hasEditable(AccessibilityNodeInfo node) {
         if (node == null) return false;
         if (node.isEditable()) return true;
-        for (int i = 0; i < node.getChildCount(); i++) {
-            if (hasEditable(node.getChild(i))) return true;
-        }
+        for (int i = 0; i < node.getChildCount(); i++) if (hasEditable(node.getChild(i))) return true;
         return false;
     }
 
-    private void setMode(String mode) {
-        control.edit().putString("mode", mode).apply();
-    }
+    private void setMode(String mode) { control.edit().putString("mode", mode).apply(); }
 
     private void show() {
         if (added) return;
@@ -190,18 +192,11 @@ public class SofiaCallOverlay {
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
-                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        try {
-            wm.addView(rootView, lp);
-            added = true;
-            diag.edit().putString("overlay", "FULL_REBORN_VISIBLE").apply();
-        } catch (Exception e) {
-            diag.edit().putString("overlay", "ERRO: " + e.getClass().getSimpleName()).apply();
-        }
+        try { wm.addView(rootView, lp); added = true; diag.edit().putString("overlay", "FULL_REBORN_VISIBLE").apply(); }
+        catch (Exception e) { diag.edit().putString("overlay", "ERRO: " + e.getClass().getSimpleName()).apply(); }
     }
 
     private void hide() {
@@ -214,21 +209,14 @@ public class SofiaCallOverlay {
 
     private TextView text(String value, int sp, int color, boolean bold) {
         TextView v = new TextView(service);
-        v.setText(value);
-        v.setTextSize(sp);
-        v.setTextColor(color);
-        v.setPadding(0, dp(2), 0, dp(2));
+        v.setText(value); v.setTextSize(sp); v.setTextColor(color); v.setPadding(0, dp(2), 0, dp(2));
         if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD);
         return v;
     }
 
     private Button smallButton(String label) {
         Button b = new Button(service);
-        b.setText(label);
-        b.setTextSize(11);
-        b.setAllCaps(false);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
+        b.setText(label); b.setTextSize(11); b.setAllCaps(false); b.setMinHeight(0); b.setMinimumHeight(0);
         return b;
     }
 
@@ -238,7 +226,5 @@ public class SofiaCallOverlay {
         return p;
     }
 
-    private int dp(int n) {
-        return Math.round(n * service.getResources().getDisplayMetrics().density);
-    }
+    private int dp(int n) { return Math.round(n * service.getResources().getDisplayMetrics().density); }
 }
