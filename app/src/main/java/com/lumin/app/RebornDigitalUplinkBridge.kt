@@ -11,17 +11,19 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Sends synthesized PCM to a shell daemon that explicitly targets TYPE_TELEPHONY. */
+/** Sends synthesized PCM to the shell telephony-routing daemon and exposes exact gate telemetry. */
 object RebornDigitalUplinkBridge {
     @Volatile private var state: String = "IDLE"
     @Volatile private var lastError: String = ""
     @Volatile private var bytesSent: Long = 0
     @Volatile private var daemonStatus: String = ""
+    @Volatile private var daemonTrace: String = ""
 
     @JvmStatic fun state(): String = state
     @JvmStatic fun lastError(): String = lastError
     @JvmStatic fun bytesSent(): Long = bytesSent
     @JvmStatic fun daemonStatus(): String = daemonStatus
+    @JvmStatic fun daemonTrace(): String = daemonTrace
 
     @JvmStatic
     fun playWav(context: Context, wav: File, onDone: ((Boolean) -> Unit)? = null) {
@@ -30,6 +32,7 @@ object RebornDigitalUplinkBridge {
             bytesSent = 0
             lastError = ""
             daemonStatus = ""
+            daemonTrace = ""
             state = "PREPARING_TELEPHONY_ROUTE"
             publish(app)
             var server: ServerSocket? = null
@@ -65,21 +68,20 @@ object RebornDigitalUplinkBridge {
                             if (!line.startsWith("REBORN_STATUS|")) continue
                             val msg = line.removePrefix("REBORN_STATUS|")
                             daemonStatus = msg
+                            daemonTrace = if (daemonTrace.isEmpty()) msg else (daemonTrace + "\n" + msg).takeLast(6000)
                             when {
                                 msg.startsWith("TELEPHONY_FOUND") -> state = "TELEPHONY_FOUND"
-                                msg.startsWith("SET_TELEPHONY_DEVICE=true") -> {
+                                msg.startsWith("TELEPHONY_ROUTE_READY") -> state = "TELEPHONY_ROUTE_READY"
+                                msg.startsWith("READY_FOR_PCM") -> {
                                     state = "TELEPHONY_ROUTE_READY"
                                     readyForPcm.set(true)
                                 }
-                                msg.startsWith("NO_TELEPHONY_OUTPUT") -> {
-                                    state = "NO_TELEPHONY_OUTPUT"
+                                msg.startsWith("UPLINK_GATE_BLOCKED") || msg.startsWith("NO_SYSTEM_CONTEXT") ||
+                                        msg.startsWith("NO_AUDIO_MANAGER") || msg.startsWith("GET_DEVICES_ERROR") -> {
+                                    state = "TELEPHONY_ROUTE_BLOCKED"
                                     lastError = msg
                                 }
-                                msg.startsWith("SET_TELEPHONY_DEVICE=false") -> {
-                                    state = "TELEPHONY_ROUTE_REJECTED"
-                                    lastError = msg
-                                }
-                                msg.startsWith("TRACK_") || msg.startsWith("SET_DEVICE_ERROR") || msg.startsWith("GET_DEVICES_ERROR") -> {
+                                msg.startsWith("TRACK_") || msg.contains("BUILD_ERROR") || msg.contains("SET_DEVICE_ERROR") -> {
                                     state = "TELEPHONY_ROUTE_ERROR"
                                     lastError = msg
                                 }
@@ -87,17 +89,18 @@ object RebornDigitalUplinkBridge {
                             }
                             publish(app)
                         }
-                    } catch (_: Throwable) {
+                    } catch (t: Throwable) {
+                        if (lastError.isEmpty() && !readyForPcm.get()) lastError = "STATUS_READER:${t.javaClass.simpleName}:${t.message ?: ""}"
                     }
                 }, "reborn-uplink-status")
                 statusThread.start()
 
-                val deadline = System.currentTimeMillis() + 5_000L
+                val deadline = System.currentTimeMillis() + 7_000L
                 while (!readyForPcm.get() && System.currentTimeMillis() < deadline && lastError.isEmpty()) {
                     Thread.sleep(25L)
                 }
                 check(readyForPcm.get()) {
-                    if (lastError.isNotEmpty()) lastError else "TYPE_TELEPHONY não ficou pronto"
+                    if (lastError.isNotEmpty()) lastError else "Telephony route não ficou pronta · último=$daemonStatus"
                 }
 
                 BufferedOutputStream(socket.getOutputStream(), 64 * 1024).use { out ->
@@ -192,6 +195,7 @@ object RebornDigitalUplinkBridge {
             .putString("digital_uplink_state", state)
             .putString("digital_uplink_error", lastError)
             .putString("digital_uplink_daemon", daemonStatus)
+            .putString("digital_uplink_trace", daemonTrace)
             .putLong("digital_uplink_bytes", bytesSent)
             .apply()
         RebornCallActivity.refreshFromService()
