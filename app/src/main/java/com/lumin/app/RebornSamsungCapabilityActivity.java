@@ -1,5 +1,8 @@
 package com.lumin.app;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -21,6 +24,7 @@ import java.util.concurrent.Executors;
 public class RebornSamsungCapabilityActivity extends AppCompatActivity {
     private TextView status;
     private TextView output;
+    private Button copyButton;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -52,9 +56,21 @@ public class RebornSamsungCapabilityActivity extends AppCompatActivity {
         shell.setOnClickListener(v -> runShellScan());
         root.addView(shell, new LinearLayout.LayoutParams(-1, dp(58)));
 
+        copyButton = new Button(this);
+        copyButton.setAllCaps(false);
+        copyButton.setText("COPIAR TODO O MAPA");
+        copyButton.setGravity(Gravity.CENTER);
+        copyButton.setEnabled(false);
+        copyButton.setOnClickListener(v -> copyAllText());
+        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(-1, dp(54));
+        copyLp.topMargin = dp(8);
+        copyLp.bottomMargin = dp(10);
+        root.addView(copyButton, copyLp);
+
         output = tv("", 12, Color.rgb(225,230,242), false);
         output.setPadding(dp(12), dp(12), dp(12), dp(12));
         output.setBackgroundColor(Color.rgb(14,22,39));
+        output.setTextIsSelectable(true);
         root.addView(output, new LinearLayout.LayoutParams(-1, -2));
         setContentView(scroll);
     }
@@ -90,10 +106,12 @@ public class RebornSamsungCapabilityActivity extends AppCompatActivity {
         };
         for (String c : classes) s.append("CLASS ").append(c).append('=').append(classExists(c) ? "PRESENT" : "ABSENT").append('\n');
         output.setText(s.toString());
+        copyButton.setEnabled(true);
     }
 
     private void runShellScan() {
         status.setText("Estado: a ligar UID shell…");
+        copyButton.setEnabled(false);
         Executors.newSingleThreadExecutor().submit(() -> {
             EmbeddedAdbManager adb = EmbeddedAdbManager.get(this);
             ServerSocket server = null;
@@ -119,16 +137,36 @@ public class RebornSamsungCapabilityActivity extends AppCompatActivity {
                     if ("DONE".equals(msg)) break;
                 }
                 String text = output.getText().toString() + shell;
-                runOnUiThread(() -> { output.setText(text); status.setText("Estado: MAPA COMPLETO ✅"); toast("Mapa Samsung concluído"); });
+                runOnUiThread(() -> {
+                    output.setText(text);
+                    status.setText("Estado: MAPA COMPLETO ✅");
+                    copyButton.setEnabled(true);
+                    toast("Mapa Samsung concluído · pronto a copiar");
+                });
             } catch (Throwable t) {
                 String msg = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
-                runOnUiThread(() -> { status.setText("Estado: erro · " + msg); toast(msg); });
+                runOnUiThread(() -> {
+                    status.setText("Estado: erro · " + msg);
+                    copyButton.setEnabled(output.getText().length() > 0);
+                    toast(msg);
+                });
             } finally {
                 try { if (socket != null) socket.close(); } catch (Throwable ignored) {}
                 try { if (server != null) server.close(); } catch (Throwable ignored) {}
                 try { if (stream != null) stream.close(); } catch (Throwable ignored) {}
             }
         });
+    }
+
+    private void copyAllText() {
+        String text = output.getText() == null ? "" : output.getText().toString();
+        if (text.trim().isEmpty()) {
+            toast("Ainda não há mapa para copiar");
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        clipboard.setPrimaryClip(ClipData.newPlainText("REBORN Samsung Capability Map", text));
+        toast("Mapa completo copiado ✅");
     }
 
     private boolean classExists(String name) { try { Class.forName(name); return true; } catch (Throwable t) { return false; } }
