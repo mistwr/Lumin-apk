@@ -1,14 +1,12 @@
 package com.lumin.app;
 
 import android.Manifest;
-import android.app.role.RoleManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.telecom.TelecomManager;
 import android.view.Gravity;
 import android.widget.Button;
@@ -21,7 +19,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class RebornDialerActivity extends AppCompatActivity {
-    private static final int REQ_DIALER = 904;
     private static final int REQ_PERMS = 905;
     private EditText number;
 
@@ -30,7 +27,8 @@ public class RebornDialerActivity extends AppCompatActivity {
         buildUi();
         readIntentNumber(getIntent());
         requestRuntimePermissions();
-        requestDialerRoleIfNeeded();
+        // IMPORTANTE: não pedir ROLE_DIALER. O Samsung Phone tem de continuar predefinido
+        // para manter Samsung Call Assistant / Text Call disponível como motor de voz GSM.
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -53,7 +51,7 @@ public class RebornDialerActivity extends AppCompatActivity {
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("Telefone nativo · IA · transcrição · gravação · CRM");
+        sub.setText("REBORN controla · Samsung Phone executa a chamada e o Call Assistant");
         sub.setTextSize(15);
         sub.setTextColor(Color.rgb(150,165,195));
         sub.setGravity(Gravity.CENTER);
@@ -77,24 +75,16 @@ public class RebornDialerActivity extends AppCompatActivity {
         cp.topMargin = dp(16);
         root.addView(call, cp);
 
-        Button role = new Button(this);
-        role.setText("Definir REBORN como app Telefone");
-        role.setAllCaps(false);
-        role.setOnClickListener(v -> requestDialerRole());
-        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, dp(60));
-        rp.topMargin = dp(12);
-        root.addView(role, rp);
-
         Button pcm = new Button(this);
         pcm.setText("Configurar captura de áudio PCM");
         pcm.setAllCaps(false);
         pcm.setOnClickListener(v -> startActivity(new Intent(this, RebornAdbSetupActivity.class)));
         LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, dp(60));
-        pp.topMargin = dp(10);
+        pp.topMargin = dp(12);
         root.addView(pcm, pp);
 
         TextView info = new TextView(this);
-        info.setText("Quando o REBORN é o telefone predefinido, as chamadas GSM entram no RebornInCallService. Em chamada ativa arrancam automaticamente Qwen3, STT, gravação PCM e resumo CRM.");
+        info.setText("O Telefone Samsung deve permanecer como aplicação de telefone predefinida. O REBORN inicia a chamada, abre/usa o Samsung Text Call pelo bridge de Acessibilidade e mantém o Qwen/Sofia como cérebro.");
         info.setTextSize(14);
         info.setTextColor(Color.rgb(150,165,195));
         info.setPadding(0, dp(22), 0, 0);
@@ -121,23 +111,6 @@ public class RebornDialerActivity extends AppCompatActivity {
         if (i == null || number == null) return;
         Uri data = i.getData();
         if (data != null && "tel".equals(data.getScheme())) number.setText(data.getSchemeSpecificPart());
-    }
-
-    private void requestDialerRoleIfNeeded() {
-        if (Build.VERSION.SDK_INT < 29) return;
-        RoleManager rm = getSystemService(RoleManager.class);
-        if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_DIALER) && !rm.isRoleHeld(RoleManager.ROLE_DIALER)) requestDialerRole();
-    }
-
-    private void requestDialerRole() {
-        if (Build.VERSION.SDK_INT >= 29) {
-            RoleManager rm = getSystemService(RoleManager.class);
-            if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_DIALER)) {
-                startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER), REQ_DIALER);
-                return;
-            }
-        }
-        startActivity(new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS));
     }
 
     private void placeCall() {
