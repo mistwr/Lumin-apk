@@ -3,6 +3,7 @@ package com.lumin.app
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.util.Base64
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
@@ -207,18 +208,28 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
     @Suppress("DEPRECATION")
     private fun discoverCurrentWirelessAdbEndpoint(timeoutMs: Long, savedHost: String): Pair<String, Int>? {
         val nsd = appContext.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return null
+        val wifi = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val multicastLock = runCatching {
+            wifi?.createMulticastLock("REBORN_ADB_MDNS")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }.getOrNull()
         val result = AtomicReference<Pair<String, Int>?>(null)
         val latch = CountDownLatch(1)
         val localIps = localIpv4Addresses()
         lateinit var discovery: NsdManager.DiscoveryListener
 
+        diagnostic = if (multicastLock?.isHeld == true) "MDNS_MULTICAST_LOCKED" else "MDNS_MULTICAST_LOCK_UNAVAILABLE"
+
         discovery = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {
-                diagnostic = "MDNS_STARTED"
+                diagnostic = "MDNS_STARTED · lock=${multicastLock?.isHeld == true}"
             }
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 if (!serviceInfo.serviceType.contains("_adb-tls-connect._tcp")) return
+                diagnostic = "MDNS_SERVICE_FOUND ${serviceInfo.serviceName}"
                 runCatching {
                     nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                         override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
@@ -230,9 +241,9 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
                             val port = info.port
                             if (port !in 1..65535) return
                             val isThisPhone = host == savedHost || host in localIps || host == "127.0.0.1"
+                            diagnostic = "MDNS_RESOLVED $host:$port · local=$isThisPhone"
                             if (!isThisPhone) return
                             if (result.compareAndSet(null, host to port)) {
-                                diagnostic = "MDNS_RESOLVED $host:$port"
                                 latch.countDown()
                             }
                         }
@@ -260,6 +271,7 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
             null
         } finally {
             runCatching { nsd.stopServiceDiscovery(discovery) }
+            runCatching { if (multicastLock?.isHeld == true) multicastLock.release() }
         }
     }
 
