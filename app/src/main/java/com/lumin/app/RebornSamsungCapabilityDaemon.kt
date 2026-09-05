@@ -90,7 +90,6 @@ object RebornSamsungCapabilityDaemon {
             }.isSuccess
             emit("API getCallUplinkInjectionAudioTrack=${if (official) "PRESENT" else "ABSENT"}")
 
-            // Read-only reflection: list signatures only; no target method is invoked.
             val reflectTargets = listOf(
                 "com.samsung.android.telecom.SemTelecomManager",
                 "com.samsung.android.knox.custom.SystemManager",
@@ -106,12 +105,20 @@ object RebornSamsungCapabilityDaemon {
             )
             reflectTargets.forEach { target -> scanMethods(target, reflectKeys, ::emit) }
 
+            // Samsung Call Assistant / Phone integration map. Read-only: package metadata,
+            // exported components, intent filters, permissions and running service surfaces.
+            listOf(
+                "com.samsung.android.callassistant",
+                "com.samsung.android.incallui",
+                "com.samsung.android.dialer"
+            ).forEach { pkg -> scanSamsungCallPackage(pkg, ::emit) }
+
             shellLines("service list", 260).filter { line ->
                 val x = line.lowercase()
                 x.contains("audio") || x.contains("phone") || x.contains("telecom") || x.contains("telephony") ||
                     x.contains("ims") || x.contains("knox") || x.contains("sec") || x.contains("samsung") || x.contains("radio") ||
-                    x.contains("voice") || x.contains("sve")
-            }.take(190).forEach { emit("SERVICE $it") }
+                    x.contains("voice") || x.contains("sve") || x.contains("assistant") || x.contains("screen")
+            }.take(200).forEach { emit("SERVICE $it") }
 
             listOf("audio", "telecom", "phone", "ims", "package", "device_config").forEach { name ->
                 val text = shell("cmd $name help")
@@ -137,10 +144,10 @@ object RebornSamsungCapabilityDaemon {
                 .filter { containsAny(it, policyKeys) }
                 .take(180).forEach { emit("AUDIO_FLINGER ${compact(it)}") }
 
-            val telecomKeys = listOf("default", "phone account", "incall", "callaudio", "route", "audio", "connectionservice", "call screening", "call redirection")
+            val telecomKeys = listOf("default", "phone account", "incall", "callaudio", "route", "audio", "connectionservice", "call screening", "call redirection", "assistant")
             shellLines("dumpsys telecom", 650)
                 .filter { containsAny(it, telecomKeys) }
-                .take(150).forEach { emit("TELECOM_DUMPSYS ${compact(it)}") }
+                .take(160).forEach { emit("TELECOM_DUMPSYS ${compact(it)}") }
 
             listOf("phone", "telecom", "audio", "imms", "epdgService", "SveService", "enterprise_policy", "edm_proxy", "isemtelephony").forEach { svc ->
                 val r = shell("service check ${q(svc)}")
@@ -149,6 +156,43 @@ object RebornSamsungCapabilityDaemon {
 
             emit("DONE")
         }
+    }
+
+    private fun scanSamsungCallPackage(pkg: String, emit: (String) -> Unit) {
+        val path = compact(shell("pm path ${q(pkg)}"))
+        if (path.isBlank() || path.contains("not found", true) || path.contains("unknown package", true)) {
+            emit("CALLASSIST_PACKAGE $pkg=ABSENT")
+            return
+        }
+        emit("CALLASSIST_PACKAGE $pkg=PRESENT $path")
+
+        val dump = shellLines("dumpsys package ${q(pkg)}", 1800)
+        val keys = listOf(
+            "activity", "service", "receiver", "provider", "exported", "permission", "intent", "action",
+            "call", "assistant", "screen", "text", "voice", "audio", "speech", "tts", "transcrib", "caption",
+            "binder", "telecom", "incall", "reply", "message", "command", "remote", "accessibility"
+        )
+        dump.filter { containsAny(it, keys) }
+            .map { compact(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(260)
+            .forEach { emit("CALLASSIST_DUMP $pkg $it") }
+
+        shellLines("dumpsys activity services ${q(pkg)}", 500)
+            .filter { containsAny(it, keys) }
+            .map { compact(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(100)
+            .forEach { emit("CALLASSIST_SERVICE $pkg $it") }
+
+        shellLines("cmd appops get ${q(pkg)}", 220)
+            .filter { containsAny(it, listOf("audio", "record", "phone", "call", "microphone", "assistant")) }
+            .map { compact(it) }
+            .filter { it.isNotBlank() }
+            .take(70)
+            .forEach { emit("CALLASSIST_APPOP $pkg $it") }
     }
 
     private fun scanMethods(className: String, keys: List<String>, emit: (String) -> Unit) {
@@ -177,9 +221,7 @@ object RebornSamsungCapabilityDaemon {
             val t = line.trim()
             t.startsWith(permission) && (t.contains("granted=true") || t.contains("granted=false"))
         }
-        if (exact != null) {
-            return if (exact.contains("granted=true")) "GRANTED" else "DENIED"
-        }
+        if (exact != null) return if (exact.contains("granted=true")) "GRANTED" else "DENIED"
 
         var inGranted = false
         for (line in lines) {
@@ -190,7 +232,6 @@ object RebornSamsungCapabilityDaemon {
                 if (t == permission || t.startsWith("$permission ")) return "GRANTED"
             }
         }
-
         val mentioned = lines.any { it.contains(permission) }
         return if (mentioned) "DECLARED_OR_KNOWN_NOT_GRANTED" else "NOT_LISTED"
     }
