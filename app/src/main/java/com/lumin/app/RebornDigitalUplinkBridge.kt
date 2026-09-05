@@ -2,20 +2,26 @@ package com.lumin.app
 
 import android.content.Context
 import java.io.BufferedOutputStream
+import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStreamReader
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 
-/** Sends synthesized PCM to the shell AudioTrack daemon for DIGITAL EXP tests. */
+/** Sends synthesized PCM to a shell daemon that explicitly targets TYPE_TELEPHONY. */
 object RebornDigitalUplinkBridge {
     @Volatile private var state: String = "IDLE"
     @Volatile private var lastError: String = ""
     @Volatile private var bytesSent: Long = 0
+    @Volatile private var daemonStatus: String = ""
 
     @JvmStatic fun state(): String = state
     @JvmStatic fun lastError(): String = lastError
     @JvmStatic fun bytesSent(): Long = bytesSent
+    @JvmStatic fun daemonStatus(): String = daemonStatus
 
     @JvmStatic
     fun playWav(context: Context, wav: File, onDone: ((Boolean) -> Unit)? = null) {
@@ -23,10 +29,12 @@ object RebornDigitalUplinkBridge {
             val app = context.applicationContext
             bytesSent = 0
             lastError = ""
-            state = "PREPARING"
+            daemonStatus = ""
+            state = "PREPARING_TELEPHONY_ROUTE"
             publish(app)
             var server: ServerSocket? = null
             var stream: io.github.muntashirakon.adb.AdbStream? = null
+            var socket: Socket? = null
             try {
                 val info = readWavInfo(wav)
                 require(info.bitsPerSample == 16) { "Só PCM16 é suportado" }
@@ -43,40 +51,92 @@ object RebornDigitalUplinkBridge {
                 state = "DAEMON_STARTED"
                 publish(app)
 
-                server.accept().use { socket ->
-                    socket.tcpNoDelay = true
-                    BufferedOutputStream(socket.getOutputStream(), 64 * 1024).use { out ->
-                        FileInputStream(wav).use { input ->
-                            var remainingSkip = info.dataOffset
-                            while (remainingSkip > 0) {
-                                val s = input.skip(remainingSkip)
-                                if (s <= 0) break
-                                remainingSkip -= s
+                socket = server.accept().apply {
+                    tcpNoDelay = true
+                    soTimeout = 12_000
+                }
+
+                val readyForPcm = AtomicBoolean(false)
+                val statusReader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+                val statusThread = Thread({
+                    try {
+                        while (true) {
+                            val line = statusReader.readLine() ?: break
+                            if (!line.startsWith("REBORN_STATUS|")) continue
+                            val msg = line.removePrefix("REBORN_STATUS|")
+                            daemonStatus = msg
+                            when {
+                                msg.startsWith("TELEPHONY_FOUND") -> state = "TELEPHONY_FOUND"
+                                msg.startsWith("SET_TELEPHONY_DEVICE=true") -> {
+                                    state = "TELEPHONY_ROUTE_READY"
+                                    readyForPcm.set(true)
+                                }
+                                msg.startsWith("NO_TELEPHONY_OUTPUT") -> {
+                                    state = "NO_TELEPHONY_OUTPUT"
+                                    lastError = msg
+                                }
+                                msg.startsWith("SET_TELEPHONY_DEVICE=false") -> {
+                                    state = "TELEPHONY_ROUTE_REJECTED"
+                                    lastError = msg
+                                }
+                                msg.startsWith("TRACK_") || msg.startsWith("SET_DEVICE_ERROR") || msg.startsWith("GET_DEVICES_ERROR") -> {
+                                    state = "TELEPHONY_ROUTE_ERROR"
+                                    lastError = msg
+                                }
+                                msg.startsWith("STREAM_COMPLETE") -> state = "TELEPHONY_STREAM_COMPLETE_REMOTE_UNVERIFIED"
                             }
-                            state = "STREAMING"
                             publish(app)
-                            val buf = ByteArray(8192)
-                            var remaining = info.dataSize
-                            while (remaining > 0) {
-                                val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
-                                if (n < 0) break
-                                out.write(buf, 0, n)
-                                bytesSent += n
-                                remaining -= n
-                            }
-                            out.flush()
                         }
+                    } catch (_: Throwable) {
+                    }
+                }, "reborn-uplink-status")
+                statusThread.start()
+
+                val deadline = System.currentTimeMillis() + 5_000L
+                while (!readyForPcm.get() && System.currentTimeMillis() < deadline && lastError.isEmpty()) {
+                    Thread.sleep(25L)
+                }
+                check(readyForPcm.get()) {
+                    if (lastError.isNotEmpty()) lastError else "TYPE_TELEPHONY não ficou pronto"
+                }
+
+                BufferedOutputStream(socket.getOutputStream(), 64 * 1024).use { out ->
+                    FileInputStream(wav).use { input ->
+                        var remainingSkip = info.dataOffset
+                        while (remainingSkip > 0) {
+                            val s = input.skip(remainingSkip)
+                            if (s <= 0) break
+                            remainingSkip -= s
+                        }
+                        state = "STREAMING_TO_TELEPHONY"
+                        publish(app)
+                        val buf = ByteArray(8192)
+                        var remaining = info.dataSize
+                        while (remaining > 0) {
+                            val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            bytesSent += n
+                            remaining -= n
+                            if ((bytesSent and 0xFFFFL) == 0L) publish(app)
+                        }
+                        out.flush()
                     }
                 }
-                state = "LOCAL_STREAM_COMPLETE_REMOTE_UNVERIFIED"
+
+                runCatching { statusThread.join(1_500L) }
+                if (state == "STREAMING_TO_TELEPHONY" || state == "TELEPHONY_ROUTE_READY") {
+                    state = "TELEPHONY_STREAM_COMPLETE_REMOTE_UNVERIFIED"
+                }
                 publish(app)
                 onDone?.invoke(true)
             } catch (t: Throwable) {
-                lastError = t.message ?: t.javaClass.simpleName
+                lastError = if (lastError.isNotEmpty()) lastError else (t.message ?: t.javaClass.simpleName)
                 state = "ERROR"
                 publish(app)
                 onDone?.invoke(false)
             } finally {
+                runCatching { socket?.close() }
                 runCatching { server?.close() }
                 runCatching { stream?.close() }
             }
@@ -131,6 +191,7 @@ object RebornDigitalUplinkBridge {
         context.getSharedPreferences("reborn_central", Context.MODE_PRIVATE).edit()
             .putString("digital_uplink_state", state)
             .putString("digital_uplink_error", lastError)
+            .putString("digital_uplink_daemon", daemonStatus)
             .putLong("digital_uplink_bytes", bytesSent)
             .apply()
         RebornCallActivity.refreshFromService()
