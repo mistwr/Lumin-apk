@@ -71,6 +71,11 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
     fun savedConnectPort(): Int = prefs.getInt(KEY_CONNECT_PORT, 0)
     fun lastDiagnostic(): String = diagnostic
 
+    /**
+     * Wireless debugging can briefly drop when a call starts, the screen changes state,
+     * or Android rotates the adbd endpoint. Keep this synchronous method off the UI thread.
+     * It first retries the last known endpoint, then performs mDNS auto-discovery twice.
+     */
     fun ensureConnected(): Boolean {
         if (isConnected) {
             diagnostic = "CONNECTED_ALREADY"
@@ -79,31 +84,48 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
 
         val host = savedConnectHost()
         val port = savedConnectPort()
+        var last = if (port in 1..65535) "DIRECT_PENDING $host:$port" else "NO_SAVED_PORT"
+
         if (port in 1..65535) {
-            diagnostic = "DIRECT_CONNECT $host:$port"
-            try {
-                val direct = connect(host, port)
-                if (direct) {
-                    diagnostic = "DIRECT_CONNECTED $host:$port"
+            repeat(3) { attempt ->
+                if (isConnected) {
+                    diagnostic = "DIRECT_CONNECTED_RACE $host:$port"
                     return true
                 }
-                diagnostic = "DIRECT_RETURNED_FALSE $host:$port"
-            } catch (t: Throwable) {
-                diagnostic = "DIRECT_ERROR $host:$port · ${t.javaClass.simpleName}: ${t.message ?: ""}"
+                diagnostic = "DIRECT_CONNECT_${attempt + 1} $host:$port"
+                try {
+                    if (connect(host, port)) {
+                        diagnostic = "DIRECT_CONNECTED_${attempt + 1} $host:$port"
+                        return true
+                    }
+                    last = "DIRECT_FALSE_${attempt + 1} $host:$port"
+                } catch (t: Throwable) {
+                    last = "DIRECT_ERROR_${attempt + 1} $host:$port · ${t.javaClass.simpleName}: ${t.message ?: ""}"
+                }
+                if (attempt < 2) Thread.sleep(250L)
             }
-        } else {
-            diagnostic = "NO_SAVED_PORT"
         }
 
-        val beforeAuto = diagnostic
-        return try {
-            val auto = autoConnect(appContext, 15_000)
-            diagnostic = if (auto) "AUTO_CONNECTED · after $beforeAuto" else "AUTO_NOT_FOUND · after $beforeAuto"
-            auto
-        } catch (t: Throwable) {
-            diagnostic = "AUTO_ERROR ${t.javaClass.simpleName}: ${t.message ?: ""} · after $beforeAuto"
-            false
+        repeat(2) { attempt ->
+            if (isConnected) {
+                diagnostic = "AUTO_CONNECTED_RACE · after $last"
+                return true
+            }
+            diagnostic = "AUTO_DISCOVERY_${attempt + 1} · after $last"
+            try {
+                if (autoConnect(appContext, 15_000)) {
+                    diagnostic = "AUTO_CONNECTED_${attempt + 1} · after $last"
+                    return true
+                }
+                last = "AUTO_NOT_FOUND_${attempt + 1} · after $last"
+            } catch (t: Throwable) {
+                last = "AUTO_ERROR_${attempt + 1} ${t.javaClass.simpleName}: ${t.message ?: ""} · after $last"
+            }
+            if (attempt == 0) Thread.sleep(400L)
         }
+
+        diagnostic = "RECONNECT_FAILED · $last"
+        return false
     }
 
     fun openShell(command: String): AdbStream {
