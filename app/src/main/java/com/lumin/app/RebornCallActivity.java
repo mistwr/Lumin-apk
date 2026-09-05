@@ -1,6 +1,5 @@
 package com.lumin.app;
 
-import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
@@ -8,7 +7,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.telecom.Call;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -21,6 +19,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
     private TextView state;
     private TextView number;
     private TextView ai;
+    private TextView pipeline;
     private TextView transcript;
     private TextView reply;
     private TextView voice;
@@ -65,8 +64,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         root.setPadding(dp(22), dp(32), dp(22), dp(32));
         scroll.addView(root);
 
-        TextView brand = t("REBORN AI · CENTRAL DE CHAMADA", 14, Color.rgb(106,235,183), true);
-        root.addView(brand);
+        root.addView(t("REBORN AI · CENTRAL DE CHAMADA", 14, Color.rgb(106,235,183), true));
 
         number = t("Chamada", 32, Color.WHITE, true);
         number.setGravity(Gravity.CENTER);
@@ -79,10 +77,14 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
 
         ai = t("Qwen3 a preparar…", 15, Color.rgb(106,235,183), true);
         ai.setGravity(Gravity.CENTER);
-        ai.setPadding(dp(8), dp(16), dp(8), dp(8));
+        ai.setPadding(dp(8), dp(14), dp(8), dp(4));
         root.addView(ai);
 
-        voice = t("Voz: a preparar saída da chamada", 13, Color.rgb(255,198,94), false);
+        pipeline = t("Áudio: IDLE · STT: IDLE", 13, Color.rgb(255,198,94), false);
+        pipeline.setGravity(Gravity.CENTER);
+        root.addView(pipeline);
+
+        voice = t("Voz: IDLE", 13, Color.rgb(255,198,94), false);
         voice.setGravity(Gravity.CENTER);
         root.addView(voice);
 
@@ -118,7 +120,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         Button hold = b("Em espera");
         hold.setOnClickListener(v -> { RebornInCallService s = RebornInCallService.get(); if (s != null) s.toggleHold(); });
         Button intro = b("Apresentar REBORN");
-        intro.setOnClickListener(v -> { RebornCentral.queueIntro(); sendPendingToSamsungBridge(); });
+        intro.setOnClickListener(v -> RebornCentral.queueIntro());
         controls3.addView(hold, weight());
         controls3.addView(intro, weight());
         root.addView(controls3);
@@ -126,7 +128,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         TextView trTitle = t("TRANSCRIÇÃO AO VIVO", 12, Color.rgb(148,160,194), true);
         trTitle.setPadding(0, dp(24), 0, dp(8));
         root.addView(trTitle);
-        transcript = t("À espera de áudio/transcrição…", 15, Color.rgb(225,230,242), false);
+        transcript = t("À espera de voz…", 15, Color.rgb(225,230,242), false);
         transcript.setPadding(dp(14), dp(14), dp(14), dp(14));
         transcript.setBackgroundColor(Color.rgb(14,22,39));
         root.addView(transcript, new LinearLayout.LayoutParams(-1, -2));
@@ -139,30 +141,22 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         reply.setBackgroundColor(Color.rgb(14,22,39));
         root.addView(reply, new LinearLayout.LayoutParams(-1, -2));
 
-        Button speak = b("Enviar resposta para voz da chamada");
+        Button speak = b("Falar resposta agora");
         LinearLayout.LayoutParams full = new LinearLayout.LayoutParams(-1, dp(62));
         full.topMargin = dp(12);
         speak.setLayoutParams(full);
-        speak.setOnClickListener(v -> sendPendingToSamsungBridge());
+        speak.setOnClickListener(v -> {
+            String text = RebornCentral.lastReply();
+            if (text != null && !text.trim().isEmpty()) RebornVoiceController.speak(this, text.trim());
+        });
         root.addView(speak);
 
-        TextView note = t("Central REBORN: Android Telecom + Qwen3 local + fast-path comercial + memória + histórico. A captura PCM/STT entra no canal nativo; a injeção digital direta no uplink GSM continua dependente de bridge/rota privilegiada e não é fingida pela app.", 12, Color.rgb(145,155,180), false);
+        TextView note = t("Modo AUTO: a chamada ativa arranca STT, Qwen3/fast-path e saída de voz automaticamente. A rota TTS local é funcional; a injeção digital direta no uplink GSM continua a exigir uma ponte OEM/privilegiada comprovada no dispositivo.", 12, Color.rgb(145,155,180), false);
         note.setGravity(Gravity.CENTER);
         note.setPadding(0, dp(18), 0, 0);
         root.addView(note);
 
         setContentView(scroll);
-    }
-
-    private void sendPendingToSamsungBridge() {
-        String text = RebornCentral.lastReply();
-        if (text == null || text.trim().isEmpty()) return;
-        Intent i = new Intent(SofiaAccessibilityService.ACTION_SEND_REPLY);
-        i.setPackage(getPackageName());
-        i.putExtra(SofiaAccessibilityService.EXTRA_REPLY, text.trim());
-        sendBroadcast(i);
-        getSharedPreferences("reborn_central", MODE_PRIVATE).edit().putString("voice_output", "BRIDGE_REQUESTED").apply();
-        refresh();
     }
 
     private void refresh() {
@@ -182,12 +176,20 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         String mode = getSharedPreferences("sofia_control", MODE_PRIVATE).getString("mode", "AUTO");
         ai.setText("Qwen3 · " + LocalRebornEngine.backendName() + " · " + mode + " · " + RebornCentral.stage() +
                 (RebornCentral.lastLatencyMs() > 0 ? " · " + RebornCentral.lastLatencyMs() + " ms" : ""));
+
+        pipeline.setText("Áudio: " + RebornCallAudioController.state() + " · STT: " + RebornTranscriptionService.state());
+
         String tr = RebornCentral.transcript();
-        transcript.setText(tr == null || tr.trim().isEmpty() ? "À espera de áudio/transcrição…" : tr.trim());
+        String partial = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("stt_partial", "");
+        if (tr == null || tr.trim().isEmpty()) {
+            transcript.setText(partial == null || partial.trim().isEmpty() ? "À espera de voz…" : "… " + partial.trim());
+        } else {
+            transcript.setText(tr.trim() + (partial == null || partial.trim().isEmpty() ? "" : "\n… " + partial.trim()));
+        }
+
         String r = RebornCentral.lastReply();
         reply.setText(r == null || r.trim().isEmpty() ? "A aguardar cliente…" : r);
-        String vo = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("voice_output", "IDLE");
-        voice.setText("Voz: " + vo);
+        voice.setText("Voz: " + RebornVoiceController.state() + " · rota " + RebornVoiceController.route());
     }
 
     private String label(int s) {
