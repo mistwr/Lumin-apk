@@ -23,6 +23,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
     private TextView transcript;
     private TextView reply;
     private TextView voice;
+    private TextView voiceRoute;
     private boolean muted = false;
     private boolean speaker = false;
 
@@ -88,6 +89,11 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         voice.setGravity(Gravity.CENTER);
         root.addView(voice);
 
+        voiceRoute = t("Rota de voz: AUTO", 13, Color.rgb(148,160,194), true);
+        voiceRoute.setGravity(Gravity.CENTER);
+        voiceRoute.setPadding(0, dp(4), 0, dp(4));
+        root.addView(voiceRoute);
+
         LinearLayout controls1 = row();
         Button answer = b("Atender");
         answer.setOnClickListener(v -> { RebornInCallService s = RebornInCallService.get(); if (s != null) s.answer(); });
@@ -125,6 +131,36 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         controls3.addView(intro, weight());
         root.addView(controls3);
 
+        TextView routeTitle = t("TESTE DE SAÍDA DE VOZ", 12, Color.rgb(148,160,194), true);
+        routeTitle.setPadding(0, dp(20), 0, dp(8));
+        root.addView(routeTitle);
+
+        LinearLayout route1 = row();
+        Button auto = b("AUTO");
+        auto.setOnClickListener(v -> setVoiceRoute(RebornVoiceController.ROUTE_AUTO));
+        Button samsung = b("Samsung");
+        samsung.setOnClickListener(v -> setVoiceRoute(RebornVoiceController.ROUTE_SAMSUNG));
+        route1.addView(auto, weight());
+        route1.addView(samsung, weight());
+        root.addView(route1);
+
+        LinearLayout route2 = row();
+        Button acoustic = b("Acústica");
+        acoustic.setOnClickListener(v -> setVoiceRoute(RebornVoiceController.ROUTE_ACOUSTIC));
+        Button digital = b("Digital EXP");
+        digital.setOnClickListener(v -> setVoiceRoute(RebornVoiceController.ROUTE_DIGITAL));
+        route2.addView(acoustic, weight());
+        route2.addView(digital, weight());
+        root.addView(route2);
+
+        Button testVoice = b("TESTE: outro telefone deve ouvir esta frase");
+        LinearLayout.LayoutParams testP = new LinearLayout.LayoutParams(-1, dp(62));
+        testP.topMargin = dp(10);
+        testVoice.setLayoutParams(testP);
+        testVoice.setOnClickListener(v -> RebornVoiceController.speak(this,
+                "Teste REBORN. Se me está a ouvir no outro telefone, a saída de voz desta rota funcionou."));
+        root.addView(testVoice);
+
         TextView trTitle = t("TRANSCRIÇÃO AO VIVO", 12, Color.rgb(148,160,194), true);
         trTitle.setPadding(0, dp(24), 0, dp(8));
         root.addView(trTitle);
@@ -151,12 +187,17 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         });
         root.addView(speak);
 
-        TextView note = t("Modo AUTO: a chamada ativa arranca STT, Qwen3/fast-path e saída de voz automaticamente. A rota TTS local é funcional; a injeção digital direta no uplink GSM continua a exigir uma ponte OEM/privilegiada comprovada no dispositivo.", 12, Color.rgb(145,155,180), false);
+        TextView note = t("AUTO tenta Samsung Text Call e mantém TTS local. ACÚSTICA força altifalante para provar o ciclo completo. DIGITAL EXP não é marcado como funcional enquanto o outro telefone não ouvir uma injeção digital direta.", 12, Color.rgb(145,155,180), false);
         note.setGravity(Gravity.CENTER);
         note.setPadding(0, dp(18), 0, 0);
         root.addView(note);
 
         setContentView(scroll);
+    }
+
+    private void setVoiceRoute(String route) {
+        RebornVoiceController.setRoute(this, route);
+        refresh();
     }
 
     private void refresh() {
@@ -177,7 +218,10 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         ai.setText("Qwen3 · " + LocalRebornEngine.backendName() + " · " + mode + " · " + RebornCentral.stage() +
                 (RebornCentral.lastLatencyMs() > 0 ? " · " + RebornCentral.lastLatencyMs() + " ms" : ""));
 
-        pipeline.setText("Áudio: " + RebornCallAudioController.state() + " · STT: " + RebornTranscriptionService.state());
+        String pcm = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("pcm_capture", "IDLE");
+        String sttInput = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("stt_input", "—");
+        pipeline.setText("Áudio: " + RebornCallAudioController.state() + " / PCM " + pcm +
+                " · STT: " + RebornTranscriptionService.state() + " / " + sttInput);
 
         String tr = RebornCentral.transcript();
         String partial = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("stt_partial", "");
@@ -189,7 +233,8 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
 
         String r = RebornCentral.lastReply();
         reply.setText(r == null || r.trim().isEmpty() ? "A aguardar cliente…" : r);
-        voice.setText("Voz: " + RebornVoiceController.state() + " · rota " + RebornVoiceController.route());
+        voice.setText("Voz: " + RebornVoiceController.state());
+        voiceRoute.setText("Rota de voz: " + RebornVoiceController.route());
     }
 
     private String label(int s) {
