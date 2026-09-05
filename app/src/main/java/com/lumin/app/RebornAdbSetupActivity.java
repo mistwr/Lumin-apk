@@ -57,28 +57,28 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         detail.setBackgroundColor(Color.rgb(14,22,39));
         root.addView(detail, new LinearLayout.LayoutParams(-1, -2));
 
-        Button open = button("Abrir Opções de programador / Wireless Debugging");
+        Button open = button("1 · Abrir Wireless Debugging e ver porta atual");
         open.setOnClickListener(v -> {
             try { startActivity(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)); }
             catch (Throwable t) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
         });
         root.addView(open);
 
-        root.addView(label("PAIRING"));
-        pairPort = edit("Porta de pairing (temporária)");
-        pairCode = edit("Código de 6 dígitos");
-        pairCode.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        root.addView(pairPort);
-        root.addView(pairCode);
-        Button pair = button("Emparelhar REBORN");
-        pair.setOnClickListener(v -> doPair());
-        root.addView(pair);
-
-        root.addView(label("LIGAÇÃO ADB NORMAL"));
+        root.addView(label("LIGAÇÃO ADB NORMAL · REPARAÇÃO RÁPIDA"));
         connectHost = edit("Host (ex.: 192.168.1.234)");
-        connectPort = edit("Porta do Wireless Debugging");
+        connectPort = edit("2 · Porta atual do Wireless Debugging");
+        connectPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         root.addView(connectHost);
         root.addView(connectPort);
+
+        Button quick = button("3 · Ligar porta atual + retomar teste completo");
+        quick.setOnClickListener(v -> quickRepairAndResumeTest());
+        root.addView(quick);
+
+        TextView quickHint = tv("Durante uma chamada ativa: abre Wireless Debugging, copia apenas a porta ADB normal atual, volta aqui e toca no botão acima. O REBORN liga o shell, reinicia o PCM e volta automaticamente ao teste Digital EXP — sem novo pairing.", 12, Color.rgb(255,198,94), false);
+        quickHint.setPadding(0, dp(8), 0, dp(4));
+        root.addView(quickHint);
+
         Button connect = button("Guardar e testar ligação");
         connect.setOnClickListener(v -> doConnect());
         root.addView(connect);
@@ -90,6 +90,16 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         Button pcm = button("Testar ponte VOICE_CALL PCM");
         pcm.setOnClickListener(v -> testPcm());
         root.addView(pcm);
+
+        root.addView(label("PAIRING · SÓ SE A CHAVE FOR PERDIDA"));
+        pairPort = edit("Porta de pairing (temporária)");
+        pairCode = edit("Código de 6 dígitos");
+        pairCode.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        root.addView(pairPort);
+        root.addView(pairCode);
+        Button pair = button("Emparelhar REBORN");
+        pair.setOnClickListener(v -> doPair());
+        root.addView(pair);
 
         root.addView(label("DUPLEX · CANAL DO CLIENTE"));
         TextView hint = tv("Em stereo o Samsung pode colocar uplink/downlink em lados diferentes. AUTO tenta separar dinamicamente; se o REBORN se ouvir a si próprio, fixa LEFT ou RIGHT durante uma chamada de teste.", 12, Color.rgb(160,174,205), false);
@@ -110,6 +120,74 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         root.addView(note);
 
         setContentView(scroll);
+    }
+
+    private void quickRepairAndResumeTest() {
+        final String host = connectHost.getText().toString().trim();
+        final int port = parsePort(connectPort.getText().toString());
+        if (host.isEmpty() || port <= 0) {
+            toast("Coloca a porta ADB normal atual do Wireless Debugging");
+            return;
+        }
+        Call call = RebornInCallService.activeCall();
+        if (call == null || call.getState() != Call.STATE_ACTIVE) {
+            status.setText("Estado: falta chamada celular ATIVA");
+            detail.setText("Diagnóstico: mantém a chamada ativa e volta a tocar no botão rápido");
+            toast("Mantém uma chamada ativa");
+            return;
+        }
+
+        status.setText("Estado: reparação rápida · a ligar ADB…");
+        detail.setText("Diagnóstico: DIRECT_CONNECT " + host + ":" + port);
+        getSharedPreferences("reborn_central", MODE_PRIVATE).edit()
+            .putString("digital_uplink_state", "ADB_MANUAL_PORT_CONNECTING")
+            .putString("digital_uplink_daemon", "MANUAL_PORT " + host + ":" + port)
+            .apply();
+
+        Executors.newSingleThreadExecutor().submit(() -> {
+            EmbeddedAdbManager adb = EmbeddedAdbManager.get(this);
+            try {
+                adb.saveConnectEndpoint(host, port);
+                boolean ok = adb.ensureConnected();
+                String diag = adb.lastDiagnostic();
+                if (!ok) {
+                    runOnUiThread(() -> {
+                        status.setText("Estado: porta atual NÃO LIGOU");
+                        detail.setText("Diagnóstico: " + diag);
+                        toast("Confirma a porta atual do Wireless Debugging");
+                    });
+                    return;
+                }
+
+                runOnUiThread(() -> {
+                    connectPort.setText(String.valueOf(adb.savedConnectPort()));
+                    status.setText("Estado: ADB CONNECTED ✅ · a retomar PCM + uplink…");
+                    detail.setText("Diagnóstico: " + diag + " · RETOMAR_TESTE");
+                    getSharedPreferences("reborn_central", MODE_PRIVATE).edit()
+                        .putString("pcm_error", "")
+                        .putString("digital_uplink_error", "")
+                        .putString("digital_uplink_state", "ADB_CONNECTED_RESUMING")
+                        .apply();
+                    try {
+                        RebornAudioEngine.start(this);
+                    } catch (Throwable t) {
+                        detail.setText("Diagnóstico: ADB OK · PCM start: " + safe(t));
+                    }
+                    RebornVoiceVerifier.cancel();
+                    RebornVoiceController.setRoute(this, RebornVoiceController.ROUTE_DIGITAL);
+                    RebornVoiceVerifier.start(this, RebornVoiceController.ROUTE_DIGITAL);
+                    RebornVoiceController.speak(this, "Teste REBORN. Se me está a ouvir no outro telefone, diga agora: sim, ouvi.");
+                    toast("ADB OK · PCM + Digital EXP retomados");
+                    new android.os.Handler(getMainLooper()).postDelayed(this::finish, 350L);
+                });
+            } catch (Throwable t) {
+                runOnUiThread(() -> {
+                    status.setText("Estado: erro na reparação rápida");
+                    detail.setText("Diagnóstico: " + adb.lastDiagnostic() + " · " + safe(t));
+                    toast("Erro ADB: " + safe(t));
+                });
+            }
+        });
     }
 
     private Button channelButton(String label, String value) {
