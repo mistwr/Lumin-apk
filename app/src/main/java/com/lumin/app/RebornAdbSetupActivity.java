@@ -8,6 +8,7 @@ import android.view.Gravity;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
@@ -30,15 +31,26 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
     }
 
     private void buildUi() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(Color.rgb(4,8,17));
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(22), dp(28), dp(22), dp(28));
         root.setBackgroundColor(Color.rgb(4,8,17));
+        scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         root.addView(tv("REBORN · Captura PCM", 28, Color.WHITE, true));
         TextView desc = tv("Liga o REBORN ao Wireless Debugging do próprio Samsung. O pairing é feito uma vez; depois a chave RSA fica guardada na app.", 14, Color.rgb(175,188,215), false);
         desc.setPadding(0, dp(8), 0, dp(14));
         root.addView(desc);
+
+        // Keep the result visible near the top so a connection test never appears to do nothing.
+        status = tv("Estado: —", 15, Color.rgb(106,235,183), true);
+        status.setPadding(dp(12), dp(12), dp(12), dp(12));
+        status.setBackgroundColor(Color.rgb(14,22,39));
+        root.addView(status, new LinearLayout.LayoutParams(-1, -2));
 
         Button open = button("Abrir Opções de programador / Wireless Debugging");
         open.setOnClickListener(v -> {
@@ -84,15 +96,11 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         duplexStatus.setPadding(0, dp(8), 0, 0);
         root.addView(duplexStatus);
 
-        status = tv("Estado: —", 14, Color.rgb(106,235,183), true);
-        status.setPadding(0, dp(18), 0, 0);
-        root.addView(status);
-
         TextView note = tv("A porta de pairing muda quando abres novamente o diálogo. A porta ADB normal é a que aparece no ecrã principal de Wireless Debugging.", 12, Color.rgb(145,155,180), false);
         note.setPadding(0, dp(16), 0, 0);
         root.addView(note);
 
-        setContentView(root);
+        setContentView(scroll);
     }
 
     private Button channelButton(String label, String value) {
@@ -123,12 +131,19 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         final String code = pairCode.getText().toString().trim();
         if (port <= 0 || code.length() != 6) { toast("Confirma porta e código de 6 dígitos"); return; }
         status.setText("Estado: a emparelhar…");
+        toast("A emparelhar…");
         Executors.newSingleThreadExecutor().submit(() -> {
             try {
                 boolean ok = EmbeddedAdbManager.get(this).pairLocal(port, code);
-                runOnUiThread(() -> status.setText(ok ? "Estado: PAIRED ✅" : "Estado: pairing falhou"));
+                runOnUiThread(() -> {
+                    status.setText(ok ? "Estado: PAIRED ✅" : "Estado: pairing falhou");
+                    toast(ok ? "PAIRING OK" : "Pairing falhou");
+                });
             } catch (Throwable t) {
-                runOnUiThread(() -> status.setText("Estado: erro pairing · " + safe(t)));
+                runOnUiThread(() -> {
+                    status.setText("Estado: erro pairing · " + safe(t));
+                    toast("Erro pairing: " + safe(t));
+                });
             }
         });
     }
@@ -137,32 +152,42 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
         final String host = connectHost.getText().toString().trim();
         final int port = parsePort(connectPort.getText().toString());
         if (host.isEmpty() || port <= 0) { toast("Confirma host e porta ADB normal"); return; }
-        status.setText("Estado: a ligar…");
+        status.setText("Estado: a ligar a " + host + ":" + port + " …");
+        toast("A testar ADB…");
         Executors.newSingleThreadExecutor().submit(() -> {
             try {
                 EmbeddedAdbManager adb = EmbeddedAdbManager.get(this);
                 adb.saveConnectEndpoint(host, port);
                 boolean ok = adb.ensureConnected();
-                runOnUiThread(() -> status.setText(ok ? "Estado: ADB CONNECTED ✅" : "Estado: ADB não ligou"));
+                runOnUiThread(() -> {
+                    status.setText(ok ? "Estado: ADB CONNECTED ✅ · " + host + ":" + port : "Estado: ADB NÃO LIGOU · " + host + ":" + port);
+                    toast(ok ? "ADB CONNECTED" : "ADB não ligou");
+                });
             } catch (Throwable t) {
-                runOnUiThread(() -> status.setText("Estado: erro ADB · " + safe(t)));
+                runOnUiThread(() -> {
+                    status.setText("Estado: erro ADB · " + safe(t));
+                    toast("Erro ADB: " + safe(t));
+                });
             }
         });
     }
 
     private void testPcm() {
         status.setText("Estado: a testar PCM… faz uma chamada ativa para validar VOICE_CALL");
+        toast("Teste PCM iniciado");
         try {
             RebornAudioEngine.start(this);
             new android.os.Handler(getMainLooper()).postDelayed(() -> {
                 String s = RebornAudioBridge.state();
                 long frames = RebornAudioBridge.frames();
                 status.setText("Estado: " + s + " · frames " + frames + (frames > 0 ? " ✅" : ""));
+                toast(frames > 0 ? "PCM ACTIVE · frames " + frames : "PCM sem frames · " + s);
                 refreshDuplex();
                 RebornAudioEngine.stop();
             }, 5000L);
         } catch (Throwable t) {
             status.setText("Estado: erro PCM · " + safe(t));
+            toast("Erro PCM: " + safe(t));
         }
     }
 
@@ -173,6 +198,7 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
     }
 
     private void refreshDuplex() {
+        if (duplexStatus == null) return;
         String pref = getSharedPreferences("reborn_audio", MODE_PRIVATE).getString("remote_channel", "AUTO");
         android.content.SharedPreferences p = getSharedPreferences("reborn_central", MODE_PRIVATE);
         int l = p.getInt("pcm_left_level", 0);
@@ -188,7 +214,7 @@ public class RebornAdbSetupActivity extends AppCompatActivity {
     }
 
     private String safe(Throwable t) { return t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage(); }
-    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
 
     private TextView label(String s) {
         TextView v = tv(s, 12, Color.rgb(148,160,194), true);
