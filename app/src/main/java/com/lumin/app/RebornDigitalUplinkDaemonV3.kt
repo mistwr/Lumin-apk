@@ -108,7 +108,7 @@ object RebornDigitalUplinkDaemonV3 {
             var selectedName = ""
 
             for (candidate in candidates) {
-                val attrs = buildAttributes(candidate, report) ?: continue
+                val attrs = buildAttributes(candidate) { msg -> report(msg) } ?: continue
                 val track = runCatching {
                     AudioTrack.Builder()
                         .setAudioAttributes(attrs)
