@@ -1,7 +1,9 @@
 package com.lumin.app;
 
+import android.Manifest;
 import android.app.role.RoleManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -14,15 +16,20 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import java.util.ArrayList;
+import java.util.List;
 
 public class RebornDialerActivity extends AppCompatActivity {
     private static final int REQ_DIALER = 904;
+    private static final int REQ_PERMS = 905;
     private EditText number;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildUi();
         readIntentNumber(getIntent());
+        requestRuntimePermissions();
         requestDialerRoleIfNeeded();
     }
 
@@ -46,7 +53,7 @@ public class RebornDialerActivity extends AppCompatActivity {
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("Telefone nativo · IA · chamadas · histórico");
+        sub.setText("Telefone nativo · IA · transcrição · gravação · CRM");
         sub.setTextSize(15);
         sub.setTextColor(Color.rgb(150,165,195));
         sub.setGravity(Gravity.CENTER);
@@ -78,14 +85,36 @@ public class RebornDialerActivity extends AppCompatActivity {
         rp.topMargin = dp(12);
         root.addView(role, rp);
 
+        Button pcm = new Button(this);
+        pcm.setText("Configurar captura de áudio PCM");
+        pcm.setAllCaps(false);
+        pcm.setOnClickListener(v -> startActivity(new Intent(this, RebornAdbSetupActivity.class)));
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, dp(60));
+        pp.topMargin = dp(10);
+        root.addView(pcm, pp);
+
         TextView info = new TextView(this);
-        info.setText("Depois de ser a app Telefone predefinida, as chamadas GSM entram no RebornInCallService e usam o ecrã REBORN.");
+        info.setText("Quando o REBORN é o telefone predefinido, as chamadas GSM entram no RebornInCallService. Em chamada ativa arrancam automaticamente Qwen3, STT, gravação PCM e resumo CRM.");
         info.setTextSize(14);
         info.setTextColor(Color.rgb(150,165,195));
         info.setPadding(0, dp(22), 0, 0);
         root.addView(info);
 
         setContentView(root);
+    }
+
+    private void requestRuntimePermissions() {
+        if (Build.VERSION.SDK_INT < 23) return;
+        String[] wanted = new String[] {
+                Manifest.permission.CALL_PHONE,
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.READ_CALL_LOG,
+                Manifest.permission.READ_CONTACTS
+        };
+        List<String> missing = new ArrayList<>();
+        for (String p : wanted) if (ActivityCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) missing.add(p);
+        if (!missing.isEmpty()) ActivityCompat.requestPermissions(this, missing.toArray(new String[0]), REQ_PERMS);
     }
 
     private void readIntentNumber(Intent i) {
@@ -108,13 +137,16 @@ public class RebornDialerActivity extends AppCompatActivity {
                 return;
             }
         }
-        Intent i = new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS);
-        startActivity(i);
+        startActivity(new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS));
     }
 
     private void placeCall() {
         String n = number.getText() == null ? "" : number.getText().toString().trim();
         if (n.isEmpty()) return;
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+            requestRuntimePermissions();
+            return;
+        }
         try {
             TelecomManager tm = (TelecomManager) getSystemService(TELECOM_SERVICE);
             if (tm != null) {
@@ -122,8 +154,7 @@ public class RebornDialerActivity extends AppCompatActivity {
                 return;
             }
         } catch (SecurityException ignored) {}
-        Intent i = new Intent(Intent.ACTION_CALL, Uri.fromParts("tel", n, null));
-        startActivity(i);
+        startActivity(new Intent(Intent.ACTION_CALL, Uri.fromParts("tel", n, null)));
     }
 
     private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
