@@ -11,6 +11,7 @@ import java.io.File;
 import java.util.ArrayDeque;
 import java.util.Locale;
 import java.util.Queue;
+import kotlin.Unit;
 
 /** REBORN voice output controller with explicit, measurable routes. */
 public final class RebornVoiceController implements TextToSpeech.OnInitListener {
@@ -175,6 +176,7 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
                     save("voice_started_at", String.valueOf(System.currentTimeMillis()));
                     publish();
                 }
+
                 @Override public void onDone(String utteranceId) {
                     if (utteranceId != null && utteranceId.equals(pendingDigitalUtterance)) {
                         final File wav = pendingDigitalFile;
@@ -193,6 +195,7 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
                             save("voice_error", ok ? "" : RebornDigitalUplinkBridge.lastError());
                             publish();
                             try { wav.delete(); } catch (Throwable ignored) {}
+                            return Unit.INSTANCE;
                         });
                         return;
                     }
@@ -204,6 +207,7 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
                     publish();
                     new android.os.Handler(android.os.Looper.getMainLooper()).post(RebornVoiceController.this::drain);
                 }
+
                 @Override public void onError(String utteranceId) {
                     if (utteranceId != null && utteranceId.equals(pendingDigitalUtterance)) {
                         pendingDigitalFile = null;
