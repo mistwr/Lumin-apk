@@ -3,9 +3,9 @@ package com.lumin.app;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioAttributes;
-import android.media.AudioManager;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import java.util.ArrayDeque;
 import java.util.Locale;
 import java.util.Queue;
@@ -13,18 +13,19 @@ import java.util.Queue;
 /**
  * REBORN voice output controller.
  *
- * It provides two practical output paths:
+ * Practical routes:
  * 1) Samsung Text Call bridge when that Samsung surface is available.
  * 2) Android TTS on the call device as a local/speaker fallback.
  *
- * Direct digital uplink injection into a cellular call is deliberately NOT claimed here;
- * Android/OEM restrictions vary and that path must be proven separately on-device.
+ * Direct digital uplink injection into cellular GSM remains a separately measured experiment.
  */
 public final class RebornVoiceController implements TextToSpeech.OnInitListener {
     private static final Queue<String> queue = new ArrayDeque<>();
     private static volatile RebornVoiceController instance;
     private static volatile String state = "IDLE";
     private static volatile String route = "LOCAL_TTS";
+    private static volatile boolean speaking = false;
+    private static volatile String currentText = "";
     private static Context app;
 
     private TextToSpeech tts;
@@ -53,9 +54,6 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
             return;
         }
 
-        // First try the existing Samsung Text Call accessibility bridge. If Samsung's
-        // in-call text surface is not active, the service will simply fail safely and
-        // REBORN can still speak locally through TTS.
         if (isSamsungBridgeEnabled(context)) {
             try {
                 Intent i = new Intent(SofiaAccessibilityService.ACTION_SEND_REPLY);
@@ -83,18 +81,39 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
             save("tts_lang", String.valueOf(lang));
             tts.setSpeechRate(1.04f);
             tts.setPitch(1.0f);
-            if (android.os.Build.VERSION.SDK_INT >= 21) {
-                tts.setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build());
-            }
+            tts.setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build());
+            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String utteranceId) {
+                    speaking = true;
+                    state = "SPEAKING_LOCAL";
+                    save("voice_started_at", String.valueOf(System.currentTimeMillis()));
+                    publish();
+                }
+                @Override public void onDone(String utteranceId) {
+                    speaking = false;
+                    currentText = "";
+                    state = "WAITING_CLIENT";
+                    save("voice_finished_at", String.valueOf(System.currentTimeMillis()));
+                    publish();
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(RebornVoiceController.this::drain);
+                }
+                @Override public void onError(String utteranceId) {
+                    speaking = false;
+                    currentText = "";
+                    state = "TTS_ERROR";
+                    publish();
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(RebornVoiceController.this::drain);
+                }
+            });
         } catch (Throwable ignored) { }
         drain();
     }
 
     private void drain() {
-        if (!ready || tts == null || tts.isSpeaking()) return;
+        if (!ready || tts == null || speaking || tts.isSpeaking()) return;
         final String next;
         synchronized (queue) { next = queue.poll(); }
         if (next == null) {
@@ -102,23 +121,31 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
             publish();
             return;
         }
-        state = "SPEAKING_LOCAL";
+        currentText = next;
+        state = "PREPARING_SPEECH";
         route = "LOCAL_TTS";
         save("voice_route", route);
         save("voice_text", next);
         publish();
 
+        String id = "reborn-" + System.currentTimeMillis();
         Bundle params = new Bundle();
-        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "reborn-" + System.currentTimeMillis());
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id);
         try {
-            tts.speak(next, TextToSpeech.QUEUE_FLUSH, params, "reborn-" + System.currentTimeMillis());
+            int r = tts.speak(next, TextToSpeech.QUEUE_FLUSH, params, id);
+            if (r == TextToSpeech.ERROR) {
+                speaking = false;
+                currentText = "";
+                state = "TTS_ERROR";
+                publish();
+            }
         } catch (Throwable t) {
+            speaking = false;
+            currentText = "";
             state = "TTS_ERROR";
             save("voice_error", t.getClass().getSimpleName());
             publish();
         }
-
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this::drain, 900L);
     }
 
     public static void onCustomerStartedSpeaking() {
@@ -127,6 +154,8 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
             try { if (v.tts.isSpeaking()) v.tts.stop(); } catch (Throwable ignored) { }
         }
         synchronized (queue) { queue.clear(); }
+        speaking = false;
+        currentText = "";
         state = "BARGE_IN";
         publish();
     }
@@ -137,6 +166,8 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
         if (v != null && v.tts != null) {
             try { v.tts.stop(); } catch (Throwable ignored) { }
         }
+        speaking = false;
+        currentText = "";
         state = "STOPPED";
         publish();
     }
@@ -160,9 +191,12 @@ public final class RebornVoiceController implements TextToSpeech.OnInitListener 
 
     private static void publish() {
         save("voice_state", state);
+        save("voice_speaking", String.valueOf(speaking));
         RebornCallActivity.refreshFromService();
     }
 
     public static String state() { return state; }
     public static String route() { return route; }
+    public static boolean isSpeaking() { return speaking; }
+    public static String currentText() { return currentText; }
 }
