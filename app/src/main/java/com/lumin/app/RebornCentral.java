@@ -32,6 +32,7 @@ public final class RebornCentral {
 
     public static void init(Context context) {
         app = context.getApplicationContext();
+        RebornVoiceController.init(app);
         warm();
     }
 
@@ -48,6 +49,7 @@ public final class RebornCentral {
         lastLatencyMs = 0L;
         MEMORY.setLastAssistant("");
         LocalRebornEngine.resetConversation();
+        RebornVoiceController.init(app);
         warm();
         publish();
     }
@@ -65,6 +67,7 @@ public final class RebornCentral {
             stage = "HOLD";
         } else if (state == Call.STATE_DISCONNECTED) {
             stage = "ENDED";
+            RebornVoiceController.stop();
         }
         publish();
     }
@@ -78,13 +81,15 @@ public final class RebornCentral {
         stage = "INTRO_READY";
         save("voice_output", "INTRO_READY");
         publish();
+        Context c = app;
+        if (c != null) RebornVoiceController.speak(c, INTRO);
     }
 
-    /** Feed only a verified customer utterance (PCM/STT or trusted transcript). */
+    /** Feed only a verified customer utterance (STT/PCM provider or trusted transcript). */
     public static void onCustomerText(String text) {
         if (text == null) return;
         String clean = text.trim();
-        if (clean.length() < 2 || clean.equals(lastCustomer) || clean.equals(lastReply)) return;
+        if (clean.length() < 2 || clean.equalsIgnoreCase(lastCustomer) || clean.equalsIgnoreCase(lastReply)) return;
         lastCustomer = clean;
         append("Cliente", clean);
         SofiaEngine.learnFreeText(clean, MEMORY);
@@ -126,6 +131,8 @@ public final class RebornCentral {
         save("central_path", source);
         save("voice_output", "REPLY_READY");
         publish();
+        Context c = app;
+        if (c != null) RebornVoiceController.speak(c, reply);
     }
 
     private static void warm() {
@@ -161,6 +168,7 @@ public final class RebornCentral {
         save("central_latency", String.valueOf(lastLatencyMs));
         Listener l = listener;
         if (l != null) l.onCentralChanged();
+        RebornCallActivity.refreshFromService();
     }
 
     public static String stage() { return stage; }
