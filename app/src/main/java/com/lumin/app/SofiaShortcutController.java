@@ -12,6 +12,10 @@ public final class SofiaShortcutController {
         return next;
     }
 
+    public static void setEnabled(SharedPreferences control, boolean enabled) {
+        control.edit().putBoolean("shortcut_overlay_enabled", enabled).apply();
+    }
+
     public static boolean isEnabled(SharedPreferences control) {
         return control.getBoolean("shortcut_overlay_enabled", true);
     }
