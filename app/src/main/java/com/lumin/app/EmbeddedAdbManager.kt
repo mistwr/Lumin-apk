@@ -9,7 +9,9 @@ import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import io.github.muntashirakon.adb.AdbStream
 import org.bouncycastle.asn1.x509.X509Name
 import org.bouncycastle.x509.X509V3CertificateGenerator
+import java.io.BufferedReader
 import java.io.File
+import java.io.InputStreamReader
 import java.math.BigInteger
 import java.net.Inet4Address
 import java.net.InetSocketAddress
@@ -80,9 +82,9 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
     fun lastDiagnostic(): String = diagnostic
 
     /**
-     * Wireless debugging rotates its TLS connect port. During a call, do not spend tens of
-     * seconds retrying a stale port. Probe the saved endpoint quickly, then discover the
-     * phone's current _adb-tls-connect._tcp service via Android NSD/mDNS and reconnect there.
+     * Wireless debugging rotates its TLS connect port. During a call, avoid long retries
+     * on a stale endpoint. First try reading adbd's current TLS port directly from the
+     * device property, then use mDNS/NSD, then the ADB library's own discovery.
      */
     fun ensureConnected(): Boolean {
         if (isConnected) {
@@ -110,6 +112,32 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
                 last = "STALE_ENDPOINT $savedHost:$savedPort"
                 diagnostic = last
             }
+        }
+
+        val propertyPort = readTlsPortProperty()
+        if (propertyPort != null) {
+            diagnostic = "GETPROP_FOUND $propertyPort · after $last"
+            val candidates = linkedSetOf("127.0.0.1", savedHost)
+            for (candidateHost in candidates) {
+                if (!tcpOpen(candidateHost, propertyPort, 800)) {
+                    last = "GETPROP_TCP_CLOSED $candidateHost:$propertyPort"
+                    continue
+                }
+                diagnostic = "GETPROP_CONNECT $candidateHost:$propertyPort"
+                try {
+                    if (connect(candidateHost, propertyPort)) {
+                        saveConnectEndpoint(savedHost, propertyPort)
+                        diagnostic = "GETPROP_CONNECTED $candidateHost:$propertyPort"
+                        return true
+                    }
+                    last = "GETPROP_FALSE $candidateHost:$propertyPort"
+                } catch (t: Throwable) {
+                    last = "GETPROP_ERROR $candidateHost:$propertyPort · ${t.javaClass.simpleName}: ${t.message ?: ""}"
+                }
+            }
+        } else {
+            last = "GETPROP_NOT_AVAILABLE · after $last"
+            diagnostic = last
         }
 
         diagnostic = "MDNS_DISCOVERY · after $last"
@@ -158,6 +186,17 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
         check(isConnected) { "ADB não ligado · $diagnostic" }
         diagnostic = "SHELL_OPEN"
         return openStream("shell:$command")
+    }
+
+    private fun readTlsPortProperty(): Int? {
+        return runCatching {
+            val process = ProcessBuilder("/system/bin/getprop", "service.adb.tls.port")
+                .redirectErrorStream(true)
+                .start()
+            val line = BufferedReader(InputStreamReader(process.inputStream)).use { it.readLine()?.trim() }
+            process.waitFor(1200, TimeUnit.MILLISECONDS)
+            line?.toIntOrNull()?.takeIf { it in 1..65535 }
+        }.getOrNull()
     }
 
     private fun tcpOpen(host: String, port: Int, timeoutMs: Int): Boolean = runCatching {
