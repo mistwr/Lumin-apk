@@ -18,7 +18,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
     private static RebornCallActivity current;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private volatile boolean refreshPending = false;
-    private TextView state, number, ai, pipeline, transcript, reply, voice, voiceRoute, voiceVerify, digital, digitalDaemon, probe;
+    private TextView state, number, ai, pipeline, transcript, reply, voice, voiceRoute, voiceVerify, digital, digitalDaemon, officialUplink, probe;
     private boolean muted = false;
     private boolean speaker = false;
 
@@ -74,6 +74,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         voice = t("Voz: IDLE", 13, Color.rgb(255,198,94), false); voice.setGravity(Gravity.CENTER); root.addView(voice);
         voiceRoute = t("Rota de voz: AUTO", 13, Color.rgb(148,160,194), true); voiceRoute.setGravity(Gravity.CENTER); root.addView(voiceRoute);
         digital = t("Digital uplink: IDLE", 12, Color.rgb(255,198,94), true); digital.setGravity(Gravity.CENTER); digital.setPadding(0, dp(3), 0, dp(3)); root.addView(digital);
+        officialUplink = t("Official uplink: NOT_TESTED", 12, Color.rgb(106,235,183), true); officialUplink.setGravity(Gravity.CENTER); officialUplink.setPadding(0, dp(2), 0, dp(2)); root.addView(officialUplink);
         digitalDaemon = t("Daemon uplink: —", 11, Color.rgb(190,200,225), false); digitalDaemon.setGravity(Gravity.CENTER); digitalDaemon.setPadding(dp(4), dp(2), dp(4), dp(6)); root.addView(digitalDaemon);
         probe = t("Audio stack: IDLE", 12, Color.rgb(255,198,94), false); probe.setGravity(Gravity.CENTER); probe.setPadding(dp(6), dp(3), dp(6), dp(3)); root.addView(probe);
         voiceVerify = t("Verificação remota: IDLE", 13, Color.rgb(148,160,194), true); voiceVerify.setGravity(Gravity.CENTER); voiceVerify.setPadding(0, dp(2), 0, dp(6)); root.addView(voiceVerify);
@@ -140,7 +141,7 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         reply = t("A aguardar cliente…", 17, Color.rgb(106,235,183), true); reply.setPadding(dp(14), dp(14), dp(14), dp(14)); reply.setBackgroundColor(Color.rgb(14,22,39)); root.addView(reply, new LinearLayout.LayoutParams(-1, -2));
         Button speak = b("Falar resposta agora"); LinearLayout.LayoutParams full = new LinearLayout.LayoutParams(-1, dp(62)); full.topMargin = dp(12); speak.setLayoutParams(full); speak.setOnClickListener(v -> { String text = RebornCentral.lastReply(); if (text != null && !text.trim().isEmpty()) RebornVoiceController.speak(this, text.trim()); }); root.addView(speak);
 
-        TextView note = t("UPLINK V2 mostra agora o último estado devolvido pelo daemon shell. Se o Samsung recusar a rota, o motivo aparece diretamente no ecrã em vez de um erro genérico.", 12, Color.rgb(145,155,180), false); note.setGravity(Gravity.CENTER); note.setPadding(0, dp(18), 0, 0); root.addView(note);
+        TextView note = t("UPLINK V2 mostra agora separadamente o gate oficial CALL_AUDIO_INTERCEPTION/getCallUplinkInjectionAudioTrack e o fallback experimental. Assim sabemos se o bloqueio é permissão oficial ou AudioPolicy.", 12, Color.rgb(145,155,180), false); note.setGravity(Gravity.CENTER); note.setPadding(0, dp(18), 0, 0); root.addView(note);
         setContentView(scroll);
     }
 
@@ -169,7 +170,9 @@ public class RebornCallActivity extends AppCompatActivity implements RebornCentr
         String derr = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("digital_uplink_error", "");
         String dstatus = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("digital_uplink_daemon", "");
         String dtrace = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("digital_uplink_trace", "");
+        String official = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("official_uplink_state", "NOT_TESTED");
         digital.setText("Digital uplink: " + d + " · " + bytes + " bytes" + (derr == null || derr.isEmpty() ? "" : " · " + derr));
+        officialUplink.setText("Official uplink: " + (official == null || official.isEmpty() ? "NOT_TESTED" : official));
         String traceTail = tailLines(dtrace, 5);
         digitalDaemon.setText("Daemon uplink: " + ((dstatus == null || dstatus.isEmpty()) ? "—" : dstatus) + (traceTail.isEmpty() ? "" : "\n" + traceTail));
         String ps = getSharedPreferences("reborn_central", MODE_PRIVATE).getString("audio_probe_state", "IDLE");
