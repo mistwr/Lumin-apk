@@ -39,7 +39,6 @@ object RebornSamsungCapabilityDaemon {
                 "com.samsung.android.knox.permission.KNOX_CRITICAL_COMMUNICATIONS"
             )
 
-            // First try a real Context. Some Samsung builds refuse ActivityThread.systemMain for shell app_process.
             val ctx = obtainSystemContext()
             emit("SYSTEM_CONTEXT=${ctx != null}")
             if (ctx != null) {
@@ -52,11 +51,22 @@ object RebornSamsungCapabilityDaemon {
                 emit("CONTEXT_FALLBACK=SHELL_COMMANDS")
             }
 
-            // Shell-native permission view does not need a system Context.
-            perms.forEach { p ->
-                val r = shell("cmd package check-permission ${q(p)} com.android.shell")
-                emit("SHELL_PERMISSION $p=${normalizePermission(r)}")
-            }
+            // Android 16 on this Samsung does not expose `cmd package check-permission`.
+            // Read com.android.shell's own package grant state instead (UID 2000).
+            val shellDump = shellLines("dumpsys package com.android.shell", 900)
+            perms.forEach { p -> emit("SHELL_PERMISSION $p=${permissionFromPackageDump(shellDump, p)}") }
+
+            shellDump.filter { line ->
+                val x = line.lowercase()
+                x.contains("grantedpermissions") || x.contains("runtime permissions") ||
+                    x.contains("privileged") || x.contains("system") || x.contains("uid=2000")
+            }.take(60).forEach { emit("SHELL_PACKAGE ${compact(it)}") }
+
+            shellLines("cmd appops get com.android.shell", 180)
+                .filter { line ->
+                    val x = line.lowercase()
+                    x.contains("record_audio") || x.contains("phone") || x.contains("audio") || x.contains("call")
+                }.take(50).forEach { emit("SHELL_APPOP ${compact(it)}") }
 
             val classes = listOf(
                 "android.media.AudioManager",
@@ -78,39 +88,81 @@ object RebornSamsungCapabilityDaemon {
             }.isSuccess
             emit("API getCallUplinkInjectionAudioTrack=${if (official) "PRESENT" else "ABSENT"}")
 
-            // Binder/system surfaces: names only, read-only.
-            shellLines("service list", 220).filter { line ->
+            shellLines("service list", 260).filter { line ->
                 val x = line.lowercase()
                 x.contains("audio") || x.contains("phone") || x.contains("telecom") || x.contains("telephony") ||
-                    x.contains("ims") || x.contains("knox") || x.contains("sec") || x.contains("samsung") || x.contains("radio")
-            }.take(160).forEach { emit("SERVICE $it") }
+                    x.contains("ims") || x.contains("knox") || x.contains("sec") || x.contains("samsung") || x.contains("radio") ||
+                    x.contains("voice") || x.contains("sve")
+            }.take(190).forEach { emit("SERVICE $it") }
 
-            // Read-only command availability. We deliberately do not execute setters/actions.
             listOf("audio", "telecom", "phone", "ims", "package", "device_config").forEach { name ->
                 val text = shell("cmd $name help")
                 val first = text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: "NO_OUTPUT"
                 emit("CMD $name=${compact(first)}")
             }
 
-            // Useful Samsung/framework facts exposed to shell.
-            shellLines("pm list features", 300)
-                .filter { it.contains("samsung", true) || it.contains("telephony", true) || it.contains("audio", true) || it.contains("ims", true) }
-                .take(100).forEach { emit("FEATURE ${compact(it)}") }
+            shellLines("pm list features", 360)
+                .filter { it.contains("samsung", true) || it.contains("telephony", true) || it.contains("audio", true) || it.contains("ims", true) || it.contains("knox", true) }
+                .take(130).forEach { emit("FEATURE ${compact(it)}") }
 
-            shellLines("dumpsys audio", 500)
-                .filter { line ->
-                    val x = line.lowercase()
-                    x.contains("mode") || x.contains("telephony") || x.contains("voice_call") || x.contains("call") || x.contains("communication")
-                }.take(100).forEach { emit("AUDIO_DUMPSYS ${compact(it)}") }
+            val audioKeys = listOf("mode", "telephony", "voice_call", "call", "communication", "assistant", "mute", "injection", "uplink", "voice tx", "voice_tx")
+            shellLines("dumpsys audio", 850)
+                .filter { containsAny(it, audioKeys) }
+                .take(170).forEach { emit("AUDIO_DUMPSYS ${compact(it)}") }
 
-            shellLines("dumpsys telecom", 350)
-                .filter { line ->
-                    val x = line.lowercase()
-                    x.contains("default") || x.contains("phone account") || x.contains("incall") || x.contains("callaudio") || x.contains("route")
-                }.take(80).forEach { emit("TELECOM_DUMPSYS ${compact(it)}") }
+            // AudioPolicy is the gate that refused all ordinary V3 AudioTracks. Read its
+            // declared mixes/routes/profiles to see whether Samsung exposes a call/uplink mix.
+            val policyKeys = listOf("call", "voice", "telephony", "uplink", "downlink", "assistant", "mix", "remote_submix", "direct", "route", "inject")
+            shellLines("dumpsys media.audio_policy", 1200)
+                .filter { containsAny(it, policyKeys) }
+                .take(220).forEach { emit("AUDIO_POLICY ${compact(it)}") }
+
+            shellLines("dumpsys media.audio_flinger", 1200)
+                .filter { containsAny(it, policyKeys) }
+                .take(180).forEach { emit("AUDIO_FLINGER ${compact(it)}") }
+
+            val telecomKeys = listOf("default", "phone account", "incall", "callaudio", "route", "audio", "connectionservice", "call screening", "call redirection")
+            shellLines("dumpsys telecom", 650)
+                .filter { containsAny(it, telecomKeys) }
+                .take(150).forEach { emit("TELECOM_DUMPSYS ${compact(it)}") }
+
+            // Read-only Samsung telephony/IMS surfaces that may matter later.
+            listOf("phone", "telecom", "audio", "imms", "epdgService", "SveService", "enterprise_policy", "edm_proxy").forEach { svc ->
+                val r = shell("service check ${q(svc)}")
+                emit("SERVICE_CHECK $svc=${compact(r).take(180)}")
+            }
 
             emit("DONE")
         }
+    }
+
+    private fun permissionFromPackageDump(lines: List<String>, permission: String): String {
+        val exact = lines.firstOrNull { line ->
+            val t = line.trim()
+            t.startsWith(permission) && (t.contains("granted=true") || t.contains("granted=false"))
+        }
+        if (exact != null) {
+            return if (exact.contains("granted=true")) "GRANTED" else "DENIED"
+        }
+
+        // Static/signature permissions often appear simply under grantedPermissions.
+        var inGranted = false
+        for (line in lines) {
+            val t = line.trim()
+            if (t.startsWith("grantedPermissions:")) { inGranted = true; continue }
+            if (inGranted) {
+                if (line.isNotBlank() && !line.first().isWhitespace()) inGranted = false
+                if (t == permission || t.startsWith("$permission ")) return "GRANTED"
+            }
+        }
+
+        val mentioned = lines.any { it.contains(permission) }
+        return if (mentioned) "DECLARED_OR_KNOWN_NOT_GRANTED" else "NOT_LISTED"
+    }
+
+    private fun containsAny(line: String, keys: List<String>): Boolean {
+        val x = line.lowercase()
+        return keys.any { x.contains(it) }
     }
 
     private fun scanAudioWithContext(ctx: Context, emit: (String) -> Unit) {
@@ -122,7 +174,7 @@ object RebornSamsungCapabilityDaemon {
         emit("TYPE_TELEPHONY=${if (telephony != null) "PRESENT id=${telephony.id}" else "ABSENT"}")
     }
 
-    private fun shell(command: String): String = shellLines(command, 80).joinToString("\n")
+    private fun shell(command: String): String = shellLines(command, 100).joinToString("\n")
 
     private fun shellLines(command: String, maxLines: Int): List<String> {
         return runCatching {
@@ -134,20 +186,10 @@ object RebornSamsungCapabilityDaemon {
                     lines.add(line)
                 }
             }
-            p.waitFor(4, TimeUnit.SECONDS)
+            p.waitFor(5, TimeUnit.SECONDS)
             if (p.isAlive) p.destroyForcibly()
             lines
         }.getOrElse { listOf("ERROR ${it.javaClass.simpleName}:${it.message ?: ""}") }
-    }
-
-    private fun normalizePermission(text: String): String {
-        val x = text.trim().lowercase()
-        return when {
-            x == "granted" || x.contains("permission granted") -> "GRANTED"
-            x == "denied" || x.contains("permission denied") -> "DENIED"
-            x.isEmpty() -> "UNKNOWN"
-            else -> compact(text).take(160)
-        }
     }
 
     private fun q(s: String): String = "'" + s.replace("'", "'\\''") + "'"
