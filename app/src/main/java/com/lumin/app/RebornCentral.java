@@ -6,11 +6,7 @@ import android.telecom.Call;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Central brain for one native REBORN phone call.
- * Keeps the session hot, owns the commercial opener, fast-path decisions,
- * local Qwen fallback and the live transcript shared by the call UI.
- */
+/** Central brain for one native REBORN phone call. */
 public final class RebornCentral {
     public static final String INTRO = "Olá, boa tarde. Sou a assistente virtual da MY POUPar+. É uma chamada rápida para ajudar a perceber se os seus serviços de energia ou telecomunicações continuam competitivos. Posso explicar em vinte segundos?";
 
@@ -49,6 +45,7 @@ public final class RebornCentral {
         lastLatencyMs = 0L;
         MEMORY.setLastAssistant("");
         LocalRebornEngine.resetConversation();
+        RebornVoiceVerifier.cancel();
         RebornVoiceController.init(app);
         warm();
         publish();
@@ -67,6 +64,7 @@ public final class RebornCentral {
             stage = "HOLD";
         } else if (state == Call.STATE_DISCONNECTED) {
             stage = "ENDED";
+            RebornVoiceVerifier.cancel();
             RebornVoiceController.stop();
         }
         publish();
@@ -92,8 +90,18 @@ public final class RebornCentral {
         if (clean.length() < 2 || clean.equalsIgnoreCase(lastCustomer) || clean.equalsIgnoreCase(lastReply)) return;
         lastCustomer = clean;
         append("Cliente", clean);
-        SofiaEngine.learnFreeText(clean, MEMORY);
 
+        // A route verification reply such as "sim, ouvi" belongs to diagnostics, not the
+        // sales conversation. Consume it before memory/fast-path/Qwen so we do not answer it
+        // as though it were a commercial objection.
+        if (RebornVoiceVerifier.onRemoteText(clean)) {
+            stage = "VOICE_ROUTE_VERIFIED";
+            save("central_path", "VOICE_VERIFICATION");
+            publish();
+            return;
+        }
+
+        SofiaEngine.learnFreeText(clean, MEMORY);
         SofiaEngine.Decision fast = SofiaEngine.fastDecision(clean, MEMORY);
         if (fast != null && fast.reply != null && !fast.reply.trim().isEmpty()) {
             lastLatencyMs = 0L;
