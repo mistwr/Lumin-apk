@@ -43,7 +43,13 @@ object RebornDigitalUplinkBridge {
                 require(info.bitsPerSample == 16) { "Só PCM16 é suportado" }
                 require(info.channels in 1..2) { "Canais WAV inválidos" }
                 val adb = EmbeddedAdbManager.get(app)
-                check(adb.ensureConnected()) { "ADB não ligado" }
+                state = "ADB_RECONNECTING"
+                daemonStatus = adb.lastDiagnostic()
+                publish(app)
+                val connected = adb.ensureConnected()
+                daemonStatus = adb.lastDiagnostic()
+                publish(app)
+                check(connected) { "ADB não ligado · ${adb.lastDiagnostic()}" }
 
                 server = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).apply { soTimeout = 12_000 }
                 val port = server.localPort
