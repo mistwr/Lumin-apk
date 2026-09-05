@@ -1,6 +1,8 @@
 package com.lumin.app
 
 import android.content.Context
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Base64
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
@@ -9,6 +11,10 @@ import org.bouncycastle.asn1.x509.X509Name
 import org.bouncycastle.x509.X509V3CertificateGenerator
 import java.io.File
 import java.math.BigInteger
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.Socket
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
@@ -17,7 +23,9 @@ import java.security.cert.Certificate
 import java.security.cert.CertificateFactory
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Date
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectionManager() {
     private val appContext = context.applicationContext
@@ -28,7 +36,7 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
 
     init {
         setApi(Build.VERSION.SDK_INT)
-        setTimeout(20, TimeUnit.SECONDS)
+        setTimeout(8, TimeUnit.SECONDS)
         val existingKey = loadKey()
         val existingCert = loadCert()
         if (existingKey != null && existingCert != null) {
@@ -72,9 +80,9 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
     fun lastDiagnostic(): String = diagnostic
 
     /**
-     * Wireless debugging can briefly drop when a call starts, the screen changes state,
-     * or Android rotates the adbd endpoint. Keep this synchronous method off the UI thread.
-     * It first retries the last known endpoint, then performs mDNS auto-discovery twice.
+     * Wireless debugging rotates its TLS connect port. During a call, do not spend tens of
+     * seconds retrying a stale port. Probe the saved endpoint quickly, then discover the
+     * phone's current _adb-tls-connect._tcp service via Android NSD/mDNS and reconnect there.
      */
     fun ensureConnected(): Boolean {
         if (isConnected) {
@@ -82,46 +90,64 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
             return true
         }
 
-        val host = savedConnectHost()
-        val port = savedConnectPort()
-        var last = if (port in 1..65535) "DIRECT_PENDING $host:$port" else "NO_SAVED_PORT"
+        val savedHost = savedConnectHost()
+        val savedPort = savedConnectPort()
+        var last = if (savedPort in 1..65535) "DIRECT_PENDING $savedHost:$savedPort" else "NO_SAVED_PORT"
 
-        if (port in 1..65535) {
-            repeat(3) { attempt ->
-                if (isConnected) {
-                    diagnostic = "DIRECT_CONNECTED_RACE $host:$port"
-                    return true
-                }
-                diagnostic = "DIRECT_CONNECT_${attempt + 1} $host:$port"
+        if (savedPort in 1..65535) {
+            if (tcpOpen(savedHost, savedPort, 650)) {
+                diagnostic = "DIRECT_CONNECT $savedHost:$savedPort"
                 try {
-                    if (connect(host, port)) {
-                        diagnostic = "DIRECT_CONNECTED_${attempt + 1} $host:$port"
+                    if (connect(savedHost, savedPort)) {
+                        diagnostic = "DIRECT_CONNECTED $savedHost:$savedPort"
                         return true
                     }
-                    last = "DIRECT_FALSE_${attempt + 1} $host:$port"
+                    last = "DIRECT_FALSE $savedHost:$savedPort"
                 } catch (t: Throwable) {
-                    last = "DIRECT_ERROR_${attempt + 1} $host:$port · ${t.javaClass.simpleName}: ${t.message ?: ""}"
+                    last = "DIRECT_ERROR $savedHost:$savedPort · ${t.javaClass.simpleName}: ${t.message ?: ""}"
                 }
-                if (attempt < 2) Thread.sleep(250L)
+            } else {
+                last = "STALE_ENDPOINT $savedHost:$savedPort"
+                diagnostic = last
             }
         }
 
-        repeat(2) { attempt ->
-            if (isConnected) {
-                diagnostic = "AUTO_CONNECTED_RACE · after $last"
+        diagnostic = "MDNS_DISCOVERY · after $last"
+        val discovered = discoverCurrentWirelessAdbEndpoint(6_000L, savedHost)
+        if (discovered != null) {
+            val (host, port) = discovered
+            diagnostic = "MDNS_FOUND $host:$port"
+            val candidates = linkedSetOf(host, "127.0.0.1")
+            for (candidateHost in candidates) {
+                if (!tcpOpen(candidateHost, port, 800)) {
+                    last = "MDNS_TCP_CLOSED $candidateHost:$port"
+                    continue
+                }
+                diagnostic = "MDNS_CONNECT $candidateHost:$port"
+                try {
+                    if (connect(candidateHost, port)) {
+                        saveConnectEndpoint(host, port)
+                        diagnostic = "MDNS_CONNECTED $candidateHost:$port · saved=$host:$port"
+                        return true
+                    }
+                    last = "MDNS_FALSE $candidateHost:$port"
+                } catch (t: Throwable) {
+                    last = "MDNS_ERROR $candidateHost:$port · ${t.javaClass.simpleName}: ${t.message ?: ""}"
+                }
+            }
+        } else {
+            last = "MDNS_NOT_FOUND · after $last"
+        }
+
+        diagnostic = "LIB_AUTO_DISCOVERY · after $last"
+        try {
+            if (autoConnect(appContext, 8_000)) {
+                diagnostic = "LIB_AUTO_CONNECTED · after $last"
                 return true
             }
-            diagnostic = "AUTO_DISCOVERY_${attempt + 1} · after $last"
-            try {
-                if (autoConnect(appContext, 15_000)) {
-                    diagnostic = "AUTO_CONNECTED_${attempt + 1} · after $last"
-                    return true
-                }
-                last = "AUTO_NOT_FOUND_${attempt + 1} · after $last"
-            } catch (t: Throwable) {
-                last = "AUTO_ERROR_${attempt + 1} ${t.javaClass.simpleName}: ${t.message ?: ""} · after $last"
-            }
-            if (attempt == 0) Thread.sleep(400L)
+            last = "LIB_AUTO_NOT_FOUND · after $last"
+        } catch (t: Throwable) {
+            last = "LIB_AUTO_ERROR ${t.javaClass.simpleName}: ${t.message ?: ""} · after $last"
         }
 
         diagnostic = "RECONNECT_FAILED · $last"
@@ -134,6 +160,79 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
         return openStream("shell:$command")
     }
 
+    private fun tcpOpen(host: String, port: Int, timeoutMs: Int): Boolean = runCatching {
+        Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs) }
+        true
+    }.getOrDefault(false)
+
+    @Suppress("DEPRECATION")
+    private fun discoverCurrentWirelessAdbEndpoint(timeoutMs: Long, savedHost: String): Pair<String, Int>? {
+        val nsd = appContext.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return null
+        val result = AtomicReference<Pair<String, Int>?>(null)
+        val latch = CountDownLatch(1)
+        val localIps = localIpv4Addresses()
+        lateinit var discovery: NsdManager.DiscoveryListener
+
+        discovery = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) {
+                diagnostic = "MDNS_STARTED"
+            }
+
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                if (!serviceInfo.serviceType.contains("_adb-tls-connect._tcp")) return
+                runCatching {
+                    nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                            diagnostic = "MDNS_RESOLVE_FAILED=$errorCode"
+                        }
+
+                        override fun onServiceResolved(info: NsdServiceInfo) {
+                            val host = info.host?.hostAddress ?: return
+                            val port = info.port
+                            if (port !in 1..65535) return
+                            val isThisPhone = host == savedHost || host in localIps || host == "127.0.0.1"
+                            if (!isThisPhone) return
+                            if (result.compareAndSet(null, host to port)) {
+                                diagnostic = "MDNS_RESOLVED $host:$port"
+                                latch.countDown()
+                            }
+                        }
+                    })
+                }.onFailure {
+                    diagnostic = "MDNS_RESOLVE_ERROR ${it.javaClass.simpleName}:${it.message ?: ""}"
+                }
+            }
+
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) = Unit
+            override fun onDiscoveryStopped(serviceType: String) = Unit
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                diagnostic = "MDNS_START_FAILED=$errorCode"
+                latch.countDown()
+            }
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
+        }
+
+        return try {
+            nsd.discoverServices(ADB_CONNECT_SERVICE, NsdManager.PROTOCOL_DNS_SD, discovery)
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+            result.get()
+        } catch (t: Throwable) {
+            diagnostic = "MDNS_ERROR ${t.javaClass.simpleName}:${t.message ?: ""}"
+            null
+        } finally {
+            runCatching { nsd.stopServiceDiscovery(discovery) }
+        }
+    }
+
+    private fun localIpv4Addresses(): Set<String> = runCatching {
+        NetworkInterface.getNetworkInterfaces().toList()
+            .flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<Inet4Address>()
+            .filter { !it.isLoopbackAddress }
+            .mapNotNull { it.hostAddress }
+            .toSet()
+    }.getOrDefault(emptySet())
+
     companion object {
         private const val DEVICE_NAME = "REBORN AI Phone"
         private const val KEY_FILE = "reborn_adbkey"
@@ -143,6 +242,7 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
         private const val PREFS = "reborn_adb"
         private const val KEY_CONNECT_HOST = "connect_host"
         private const val KEY_CONNECT_PORT = "connect_port"
+        private const val ADB_CONNECT_SERVICE = "_adb-tls-connect._tcp."
 
         @Volatile private var instance: EmbeddedAdbManager? = null
 
@@ -179,10 +279,10 @@ class EmbeddedAdbManager private constructor(context: Context) : AbsAdbConnectio
             setPublicKey(pair.public)
             setSignatureAlgorithm("SHA512withRSA")
         }
-        @Suppress("DEPRECATION") val certificate = certificateGenerator.generate(pair.private)
+        @Suppress("DEPRECATION") val certificateGeneratorResult = certificateGenerator.generate(pair.private)
         File(appContext.filesDir, KEY_FILE).writeBytes(pair.private.encoded)
-        val body = Base64.encodeToString(certificate.encoded, Base64.DEFAULT)
+        val body = Base64.encodeToString(certificateGeneratorResult.encoded, Base64.DEFAULT)
         File(appContext.filesDir, CERT_FILE).writeText("-----BEGIN CERTIFICATE-----\n$body-----END CERTIFICATE-----\n")
-        return pair.private to certificate
+        return pair.private to certificateGeneratorResult
     }
 }
