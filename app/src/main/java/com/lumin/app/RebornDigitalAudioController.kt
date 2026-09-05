@@ -23,6 +23,7 @@ object RebornDigitalAudioController {
         frames = 0
         sttAttached = false
         running = true
+        RebornAudioBridge.init(app)
         app.getSharedPreferences("reborn_central", Context.MODE_PRIVATE).edit()
             .putString("pcm_capture", "STARTING")
             .putLong("pcm_frames", 0)
@@ -34,6 +35,10 @@ object RebornDigitalAudioController {
                 if (localRecorder.currentFile() == null) localRecorder.start(frame.sampleRate, frame.channels)
                 localRecorder.append(frame)
                 frames++
+
+                // Keep the central diagnostics in sync with the capture bridge. Previously the
+                // setup screen counted frames while the live call diagnostic stayed at 0.
+                RebornAudioBridge.onPcmFrame(frame.sampleRate, frame.channels)
 
                 var sttSamples = frame.samples
                 var sttChannels = frame.channels
@@ -49,9 +54,6 @@ object RebornDigitalAudioController {
                         val pref = app.getSharedPreferences("reborn_audio", Context.MODE_PRIVATE)
                             .getString("remote_channel", "AUTO") ?: "AUTO"
 
-                        // Do not guess vendor channel mapping permanently. AUTO uses the quieter
-                        // side while REBORN itself is speaking (echo avoidance) and the stronger
-                        // side while listening. LEFT/RIGHT can be locked after a one-call test.
                         selected = when (pref) {
                             "LEFT" -> "LEFT"
                             "RIGHT" -> "RIGHT"
