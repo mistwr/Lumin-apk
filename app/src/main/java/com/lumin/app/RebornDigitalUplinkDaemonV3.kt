@@ -80,8 +80,6 @@ object RebornDigitalUplinkDaemonV3 {
                 .setChannelMask(channelMask)
                 .build()
 
-            // Android framework has a dedicated PSTN/VoIP call-uplink injection AudioTrack.
-            // Try it first because ordinary TYPE_TELEPHONY AudioTrack creation is rejected on this Samsung.
             if (interceptPerm) {
                 val officialTrack = runCatching {
                     val method = AudioManager::class.java.getDeclaredMethod(
@@ -102,7 +100,7 @@ object RebornDigitalUplinkDaemonV3 {
                             report("OFFICIAL_UPLINK_PLAY_STATE=${officialTrack.playState}")
                             if (officialTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
                                 report("READY_FOR_PCM:OFFICIAL_CALL_UPLINK")
-                                streamPcm(socket, officialTrack, "OFFICIAL_CALL_UPLINK", report)
+                                streamPcm(socket, officialTrack, "OFFICIAL_CALL_UPLINK") { msg -> report(msg) }
                                 return
                             }
                         }
@@ -199,7 +197,7 @@ object RebornDigitalUplinkDaemonV3 {
 
             report("READY_FOR_PCM:$selectedName")
             try {
-                streamPcm(socket, track, selectedName, report)
+                streamPcm(socket, track, selectedName) { msg -> report(msg) }
             } finally {
                 runCatching { track.stop() }
                 runCatching { track.release() }
