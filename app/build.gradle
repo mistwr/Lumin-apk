@@ -11,8 +11,8 @@ android {
         applicationId "pt.reborn.ai"
         minSdk 26
         targetSdk 34
-        versionCode 642
-        versionName "6.4.2-local"
+        versionCode 643
+        versionName "6.4.3-reborn-phone"
 
         buildConfigField "String", "SUPABASE_URL", '"' + (project.findProperty("SOFIA_SUPABASE_URL") ?: "") + '"'
         buildConfigField "String", "SUPABASE_ANON_KEY", '"' + (project.findProperty("SOFIA_SUPABASE_ANON_KEY") ?: "") + '"'
@@ -44,4 +44,8 @@ dependencies {
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'com.google.ai.edge.litertlm:litertlm-android:0.11.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+
+    implementation 'com.github.MuntashirAkon:libadb-android:3.1.1'
+    implementation 'org.conscrypt:conscrypt-android:2.5.2'
+    compileOnly 'org.bouncycastle:bcprov-jdk15to18:1.81'
 }
