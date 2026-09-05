@@ -3,166 +3,144 @@ package com.lumin.app;
 import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
-import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
+/** Premium product home. Technical setup lives under Settings. */
 public class SetupActivity extends AppCompatActivity {
-    private TextView bridge;
-    private TextView ai;
-    private TextView sync;
-    private EditText endpoint;
+    private TextView profileLine, connectionBadge, callsToday, salesToday, leadsTotal, agentsActive;
+    private LinearLayout adminTools;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ProductUi.applyWindow(this);
+        if (!RebornAuthClient.isSignedIn(this)) { startActivity(new Intent(this,LoginActivity.class)); finish(); return; }
         setContentView(buildUi());
-        refreshBridge();
-        testAi();
+        loadProfile(); loadDashboard();
+        LocalQwenManager.warmUpAsync(this);
+        SdDialerBrainClient.refreshAsync(this);
+        new Thread(() -> SupabaseSyncClient.flush(this),"reborn-sync-flush").start();
     }
+
+    @Override protected void onResume() { super.onResume(); if(callsToday!=null) loadDashboard(); }
 
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(Color.rgb(7, 10, 22));
+        scroll.setBackgroundColor(ProductUi.BG);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(22), dp(30), dp(22), dp(36));
+        root.setPadding(ProductUi.dp(this,20),ProductUi.dp(this,24),ProductUi.dp(this,20),ProductUi.dp(this,42));
         scroll.addView(root);
 
-        root.addView(text("SOFIA", 40, Color.WHITE, true));
-        root.addView(text("MyPoupar Intelligence · Build 56 Setup Center", 15, Color.rgb(161,173,218), false));
-        TextView intro = text("Tudo numa página: ponte Samsung, cérebro IA, atalho, chamada e SD Dialer.", 16, Color.rgb(220,226,245), false);
-        intro.setPadding(0, dp(18), 0, dp(8));
-        root.addView(intro);
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout brand = new LinearLayout(this);
+        brand.setOrientation(LinearLayout.VERTICAL);
+        brand.addView(ProductUi.eyebrow(this,"REBORN AI"));
+        brand.addView(ProductUi.text(this,"Calling Intelligence",29,ProductUi.TEXT,true));
+        top.addView(brand,new LinearLayout.LayoutParams(0,-2,1f));
+        connectionBadge = ProductUi.badge(this,"● LIVE",true);
+        top.addView(connectionBadge);
+        root.addView(top);
 
-        root.addView(section("1 · PONTE SAMSUNG"));
-        bridge = text("A verificar…", 16, Color.rgb(106,235,183), true);
-        root.addView(bridge);
-        Button accessibility = button("Ativar / verificar acessibilidade");
-        accessibility.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        root.addView(accessibility, buttonParams());
+        TextView sub = ProductUi.text(this,"A operação comercial, os agentes e as chamadas num único workspace.",14,ProductUi.MUTED,false);
+        LinearLayout.LayoutParams subp = new LinearLayout.LayoutParams(-1,-2); subp.topMargin=ProductUi.dp(this,8); subp.bottomMargin=ProductUi.dp(this,20); sub.setLayoutParams(subp); root.addView(sub);
 
-        root.addView(section("2 · CÉREBRO IA"));
-        ai = text("A testar IA…", 16, Color.rgb(255,210,120), true);
-        root.addView(ai);
-        endpoint = new EditText(this);
-        endpoint.setText(SofiaAiHealth.endpoint(this));
-        endpoint.setTextColor(Color.WHITE);
-        endpoint.setHintTextColor(Color.rgb(130,139,168));
-        endpoint.setHint("http://127.0.0.1:11434/api/generate");
-        endpoint.setSingleLine(true);
-        endpoint.setPadding(dp(12), dp(10), dp(12), dp(10));
-        root.addView(endpoint);
+        LinearLayout hero = ProductUi.heroCard(this);
+        TextView workspace = ProductUi.text(this,"WORKSPACE",10,ProductUi.MUTED,true); workspace.setLetterSpacing(0.11f); hero.addView(workspace);
+        profileLine = ProductUi.text(this,"A validar sessão…",17,ProductUi.TEXT,true);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1,-2); plp.topMargin=ProductUi.dp(this,8); profileLine.setLayoutParams(plp); hero.addView(profileLine);
+        TextView pitch = ProductUi.text(this,"REBORN Brain ligado ao SD Dialer, histórico, follow-ups e inteligência comercial.",14,ProductUi.SOFT,false);
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1,-2); pp.topMargin=ProductUi.dp(this,7); pitch.setLayoutParams(pp); hero.addView(pitch);
+        root.addView(hero);
 
-        LinearLayout aiButtons = new LinearLayout(this);
-        aiButtons.setOrientation(LinearLayout.HORIZONTAL);
-        Button save = button("Guardar endpoint");
-        Button test = button("Testar IA");
-        save.setOnClickListener(v -> {
-            SofiaAiHealth.saveEndpoint(this, endpoint.getText().toString());
-            testAi();
-        });
-        test.setOnClickListener(v -> testAi());
-        aiButtons.addView(save, weight());
-        aiButtons.addView(test, weight());
-        root.addView(aiButtons);
+        root.addView(ProductUi.section(this,"Visão de hoje"));
+        LinearLayout row1 = metricRow();
+        callsToday = addMetric(row1,"0","Chamadas","↗ atividade");
+        salesToday = addMetric(row1,"0","Vendas","resultado");
+        root.addView(row1);
+        LinearLayout row2 = metricRow();
+        LinearLayout.LayoutParams r2p = new LinearLayout.LayoutParams(-1,-2); r2p.topMargin=ProductUi.dp(this,10); row2.setLayoutParams(r2p);
+        leadsTotal = addMetric(row2,"—","Leads","base ativa");
+        agentsActive = addMetric(row2,"—","Agentes IA","disponíveis");
+        root.addView(row2);
 
-        TextView note = text("Nesta Build, a SOFIA já gere e testa o cérebro a partir daqui. O motor Qwen ainda precisa de estar instalado/ativo no telefone ou num endpoint compatível; a próxima fase integra o runtime GGUF dentro da própria app.", 13, Color.rgb(155,165,195), false);
-        note.setPadding(0, dp(10), 0, 0);
-        root.addView(note);
+        root.addView(ProductUi.section(this,"Ação principal"));
+        LinearLayout actionCard = ProductUi.heroCard(this);
+        actionCard.addView(ProductUi.text(this,"Faz a próxima chamada com contexto, memória e assistência em tempo real.",16,ProductUi.TEXT,true));
+        TextView actionSub = ProductUi.text(this,"Escolhe o agente, introduz o contacto e inicia.",13,ProductUi.MUTED,false);
+        LinearLayout.LayoutParams asp = new LinearLayout.LayoutParams(-1,-2); asp.topMargin=ProductUi.dp(this,5); actionSub.setLayoutParams(asp); actionCard.addView(actionSub);
+        Button call = ProductUi.primary(this,"Iniciar chamada com IA  →");
+        call.setOnClickListener(v->startActivity(new Intent(this,SofiaAiCallingActivity.class)));
+        actionCard.addView(call,ProductUi.buttonParams(this));
+        root.addView(actionCard);
 
-        root.addView(section("3 · SD DIALER"));
-        boolean configured = !BuildConfig.SUPABASE_URL.isEmpty() && !BuildConfig.SUPABASE_ANON_KEY.isEmpty() && !BuildConfig.SUPABASE_ACCESS_TOKEN.isEmpty();
-        sync = text(configured ? "● SD Dialer configurado" : "○ SD Dialer a configurar", 16, configured ? Color.rgb(106,235,183) : Color.rgb(255,210,120), true);
-        root.addView(sync);
+        root.addView(ProductUi.section(this,"Operação"));
+        Button leads = ProductUi.secondary(this,"Leads e oportunidades                         →");
+        leads.setOnClickListener(v->openRecords("leads")); root.addView(leads,ProductUi.buttonParams(this));
+        Button history = ProductUi.secondary(this,"Histórico de chamadas                         →");
+        history.setOnClickListener(v->openRecords("history")); root.addView(history,ProductUi.buttonParams(this));
 
-        root.addView(section("4 · CHAMADA"));
-        Button console = button("Abrir consola SOFIA");
-        console.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
-        root.addView(console, buttonParams());
-        Button phone = button("Abrir Telefone Samsung");
-        phone.setOnClickListener(v -> openPhone());
-        root.addView(phone, buttonParams());
+        adminTools = new LinearLayout(this);
+        adminTools.setOrientation(LinearLayout.VERTICAL); adminTools.setVisibility(View.GONE);
+        adminTools.addView(ProductUi.section(this,"Gestão"));
+        Button agents = ProductUi.secondary(this,"Agent Studio                                      →");
+        agents.setOnClickListener(v->startActivity(new Intent(this,AgentBuilderActivity.class))); adminTools.addView(agents,ProductUi.buttonParams(this));
+        Button users = ProductUi.secondary(this,"Utilizadores e equipas                         →");
+        users.setOnClickListener(v->startActivity(new Intent(this,UsersAdminActivity.class))); adminTools.addView(users,ProductUi.buttonParams(this));
+        root.addView(adminTools);
 
-        TextView ready = text("Quando Ponte Samsung = ATIVA e IA = ONLINE, a SOFIA está pronta para conversar em AUTO.", 14, Color.rgb(106,235,183), true);
-        ready.setPadding(0, dp(22), 0, 0);
-        root.addView(ready);
+        root.addView(ProductUi.section(this,"Sistema"));
+        Button settings = ProductUi.secondary(this,"Definições e ligações                         →");
+        settings.setOnClickListener(v->startActivity(new Intent(this,ProductSettingsActivity.class))); root.addView(settings,ProductUi.buttonParams(this));
+
+        TextView footer = ProductUi.text(this,"MyPoupar · Feito por REBORN AI",11,ProductUi.MUTED,false);
+        footer.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(-1,-2); fp.topMargin=ProductUi.dp(this,28); footer.setLayoutParams(fp); root.addView(footer);
         return scroll;
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        refreshBridge();
+    private LinearLayout metricRow(){ LinearLayout row=new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); row.setWeightSum(2f); return row; }
+
+    private TextView addMetric(LinearLayout row,String value,String label,String detail){
+        LinearLayout card=ProductUi.card(this);
+        TextView lab=ProductUi.text(this,label.toUpperCase(),10,ProductUi.MUTED,true); lab.setLetterSpacing(0.08f); card.addView(lab);
+        TextView val=ProductUi.text(this,value,30,ProductUi.TEXT,true); LinearLayout.LayoutParams vp=new LinearLayout.LayoutParams(-1,-2); vp.topMargin=ProductUi.dp(this,8); val.setLayoutParams(vp); card.addView(val);
+        card.addView(ProductUi.text(this,detail,11,ProductUi.SOFT,false));
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1f); p.setMargins(ProductUi.dp(this,4),0,ProductUi.dp(this,4),0); row.addView(card,p); return val;
     }
 
-    private void refreshBridge() {
-        if (bridge == null) return;
-        boolean enabled = isAccessibilityEnabled();
-        bridge.setText(enabled ? "● Ponte Samsung ATIVA" : "○ Ponte Samsung DESLIGADA");
-        bridge.setTextColor(enabled ? Color.rgb(106,235,183) : Color.rgb(255,210,120));
-    }
-
-    private void testAi() {
-        if (ai == null) return;
-        ai.setText("◌ A testar IA…");
-        Executors.newSingleThreadExecutor().submit(() -> {
-            SofiaAiHealth.Result r = SofiaAiHealth.check(this);
-            runOnUiThread(() -> {
-                ai.setText(r.online ? "● IA ONLINE · " + r.latencyMs + " ms · " + r.message : "○ IA OFFLINE · " + r.message);
-                ai.setTextColor(r.online ? Color.rgb(106,235,183) : Color.rgb(255,125,125));
-            });
+    private void loadProfile(){
+        RebornAdminClient.call(this,"me",new JSONObject(),new RebornAdminClient.Callback(){
+            @Override public void onSuccess(JSONObject data){
+                JSONObject p=data.optJSONObject("profile"); if(p==null)return;
+                String name=p.optString("full_name",p.optString("email","Utilizador")); String role=p.optString("role",""); boolean superAdmin=p.optBoolean("is_super_admin",false);
+                boolean linked=SdDialerBrainClient.isConnected(SetupActivity.this);
+                profileLine.setText(name+"\n"+(superAdmin?"Super Admin":pretty(role)));
+                connectionBadge.setText(linked?"● CONNECTED":"◌ SYNC");
+                adminTools.setVisibility(superAdmin||"admin".equals(role)?View.VISIBLE:View.GONE);
+            }
+            @Override public void onError(String message){ profileLine.setText("Sessão precisa de atenção"); connectionBadge.setText("○ OFFLINE"); }
         });
     }
 
-    private void openPhone() {
-        Intent i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.dialer");
-        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.samsung.android.incallui");
-        if (i != null) startActivity(i);
-    }
+    private String pretty(String role){ if(role==null||role.isEmpty())return "Utilizador"; return role.substring(0,1).toUpperCase()+role.substring(1).toLowerCase(); }
 
-    private boolean isAccessibilityEnabled() {
-        String enabled = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-        return enabled != null && enabled.toLowerCase().contains(getPackageName().toLowerCase());
+    private void loadDashboard(){
+        if(callsToday==null)return;
+        RebornAdminClient.call(this,"dashboard",new JSONObject(),new RebornAdminClient.Callback(){
+            @Override public void onSuccess(JSONObject data){ JSONObject m=data.optJSONObject("metrics"); if(m==null)return; callsToday.setText(String.valueOf(m.optInt("calls_today",0))); salesToday.setText(String.valueOf(m.optInt("sales_today",0))); leadsTotal.setText(String.valueOf(m.optInt("leads",0))); agentsActive.setText(String.valueOf(m.optInt("agents_active",0))); }
+            @Override public void onError(String message){}
+        });
     }
-
-    private TextView section(String s) {
-        TextView v = text(s, 13, Color.rgb(140,151,190), true);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1,-2);
-        p.topMargin = dp(24);
-        p.bottomMargin = dp(8);
-        v.setLayoutParams(p);
-        return v;
-    }
-
-    private TextView text(String s, int sp, int color, boolean bold) {
-        TextView v = new TextView(this);
-        v.setText(s); v.setTextSize(sp); v.setTextColor(color); v.setLineSpacing(0,1.12f);
-        if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD);
-        return v;
-    }
-
-    private Button button(String label) {
-        Button b = new Button(this);
-        b.setText(label); b.setTextSize(15); b.setAllCaps(false); b.setGravity(Gravity.CENTER);
-        return b;
-    }
-
-    private LinearLayout.LayoutParams buttonParams() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(56)); p.topMargin = dp(10); return p;
-    }
-
-    private LinearLayout.LayoutParams weight() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1f);
-        p.setMargins(dp(2), dp(10), dp(2), 0);
-        return p;
-    }
-
-    private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
+    private void openRecords(String mode){Intent i=new Intent(this,RecordsActivity.class);i.putExtra("mode",mode);startActivity(i);}
 }

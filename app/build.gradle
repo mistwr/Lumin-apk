@@ -1,5 +1,6 @@
 plugins {
     id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
 }
 
 android {
@@ -10,13 +11,21 @@ android {
         applicationId "com.lumin.app"
         minSdk 26
         targetSdk 34
-        versionCode 560
-        versionName "5.6.0"
+        versionCode 631
+        versionName "6.3.1"
 
-        buildConfigField "String", "SUPABASE_URL", '"' + (project.findProperty("SOFIA_SUPABASE_URL") ?: "") + '"'
-        buildConfigField "String", "SUPABASE_ANON_KEY", '"' + (project.findProperty("SOFIA_SUPABASE_ANON_KEY") ?: "") + '"'
-        buildConfigField "String", "SUPABASE_ACCESS_TOKEN", '"' + (project.findProperty("SOFIA_SUPABASE_ACCESS_TOKEN") ?: "") + '"'
+        // Public Supabase connection details can safely ship in the client.
+        // User access is protected by Supabase Auth/RLS and short-lived session JWTs.
+        buildConfigField "String", "SUPABASE_URL", '"https://yqninaripblwhcfcwwnr.supabase.co"'
+        buildConfigField "String", "SUPABASE_ANON_KEY", '"sb_publishable_zlhSNpfeS3gjBDPsxOPiCQ_DYkKwgb_"'
+        buildConfigField "String", "SUPABASE_ACCESS_TOKEN", '""'
         buildConfigField "String", "QWEN_ENDPOINT", '"' + (project.findProperty("SOFIA_QWEN_ENDPOINT") ?: "http://127.0.0.1:11434/api/generate") + '"'
+        buildConfigField "String", "MYPOUPAR_SUPABASE_URL", '"https://lblnhttwadvofhkhkbsv.supabase.co"'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     buildTypes {
@@ -29,9 +38,15 @@ android {
     buildFeatures {
         buildConfig true
     }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
 }
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+    implementation 'dev.ffmpegkit-maintained:llama-android:0.1.1'
 }

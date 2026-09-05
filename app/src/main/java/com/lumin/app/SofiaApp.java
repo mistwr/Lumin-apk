@@ -9,6 +9,16 @@ public class SofiaApp extends Application {
     @Override public void onCreate() {
         super.onCreate();
         appContext = getApplicationContext();
+
+        // Preload the local GGUF model in the background so the first real
+        // customer turn does not pay the model-load latency.
+        new Thread(() -> {
+            try {
+                if (LocalQwenManager.isInstalled(appContext)) {
+                    LocalQwenManager.healthBlocking(appContext);
+                }
+            } catch (Throwable ignored) {}
+        }, "sofia-ai-prewarm").start();
     }
 
     public static Context context() {

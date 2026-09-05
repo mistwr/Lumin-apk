@@ -9,6 +9,12 @@ import java.net.URL;
 
 public class QwenClient {
     public static String generate(String prompt) throws Exception {
+        // Preferred path: on-device GGUF engine embedded in SOFIA.
+        if (LocalQwenManager.isInstalled(SofiaApp.context())) {
+            return LocalQwenManager.generateBlocking(SofiaApp.context(), prompt);
+        }
+
+        // Compatibility fallback: Ollama / compatible endpoint, if configured.
         URL url = new URL(SofiaAiHealth.endpoint(SofiaApp.context()));
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         c.setConnectTimeout(1200);

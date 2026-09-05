@@ -4,13 +4,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <application
         android:name=".SofiaApp"
         android:allowBackup="true"
-        android:label="SOFIA"
+        android:icon="@drawable/ic_reborn_ai"
+        android:roundIcon="@drawable/ic_reborn_ai"
+        android:label="REBORN AI"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
+
+        <activity android:name=".LoginActivity" android:exported="false" android:screenOrientation="portrait" />
 
         <activity
             android:name=".SetupActivity"
@@ -22,21 +30,23 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="false"
-            android:screenOrientation="portrait" />
+        <activity android:name=".AgentBuilderActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".UsersAdminActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".RecordsActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".ProductSettingsActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".SofiaAiCallingActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".SofiaAudioBridgeLabActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".MainActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".SofiaVoiceGatewayActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".SofiaDialerActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".SofiaNativeCallActivity" android:exported="false" android:launchMode="singleTop" android:excludeFromRecents="true" android:screenOrientation="portrait" />
 
         <service
             android:name=".SofiaOverlayAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/sofia_accessibility_service" />
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/sofia_accessibility_service" />
         </service>
 
     </application>
