@@ -15,6 +15,7 @@ public final class RebornAudioEngine {
     private RebornAudioEngine() {}
 
     public static void start(Context context) {
+        RebornAudioBridge.init(context);
         running = true;
         state = "READY_FOR_AUDIO";
         RebornAudioBridge.onState(state);
@@ -26,11 +27,6 @@ public final class RebornAudioEngine {
         RebornAudioBridge.onState(state);
     }
 
-    public static boolean isRunning() {
-        return running;
-    }
-
-    public static String state() {
-        return state;
-    }
+    public static boolean isRunning() { return running; }
+    public static String state() { return state; }
 }
