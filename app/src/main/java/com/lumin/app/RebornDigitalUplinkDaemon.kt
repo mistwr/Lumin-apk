@@ -8,6 +8,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Looper
 import android.os.Process
 import java.io.BufferedInputStream
 import java.io.BufferedWriter
@@ -138,8 +139,7 @@ object RebornDigitalUplinkDaemon {
                     report("CANDIDATE=$candidate:PLAY_STATE=${track.playState}")
                     if (track.playState != AudioTrack.PLAYSTATE_PLAYING) continue
 
-                    // Write a short silence primer so AudioPolicy resolves the real route.
-                    val primer = ByteArray((sampleRate / 20) * channels * 2) // ~50 ms PCM16
+                    val primer = ByteArray((sampleRate / 20) * channels * 2)
                     val pw = track.write(primer, 0, primer.size, AudioTrack.WRITE_BLOCKING)
                     val routed = runCatching { track.routedDevice }.getOrNull()
                     report("CANDIDATE=$candidate:PRIMER=$pw:ROUTED=${routed?.id ?: -1}:${routed?.type ?: -1}")
@@ -195,25 +195,35 @@ object RebornDigitalUplinkDaemon {
     }
 
     private fun obtainSystemContext(): Pair<Context?, String> {
-        // app_process has no Application object. Build the system ActivityThread and recover its
-        // system context. Keep multiple reflection paths because Samsung framework builds differ.
+        val looperState = runCatching {
+            if (Looper.myLooper() == null) Looper.prepareMainLooper()
+            "LOOPER_READY"
+        }.getOrElse { "LOOPER_FAIL:${it.javaClass.simpleName}:${it.message ?: ""}" }
+
+        var firstError = ""
         runCatching {
             val at = Class.forName("android.app.ActivityThread")
             val systemMain = at.getDeclaredMethod("systemMain").apply { isAccessible = true }
             val thread = systemMain.invoke(null)
             val getSystemContext = at.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
             val c = getSystemContext.invoke(thread) as? Context
-            if (c != null) return c to "SYSTEM_MAIN"
+            if (c != null) return c to "$looperState:SYSTEM_MAIN"
+        }.onFailure {
+            firstError = "SYSTEM_MAIN_FAIL:${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}"
         }
+
         runCatching {
             val at = Class.forName("android.app.ActivityThread")
             val current = at.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null)
             if (current != null) {
                 val getSystemContext = at.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
                 val c = getSystemContext.invoke(current) as? Context
-                if (c != null) return c to "CURRENT_ACTIVITY_THREAD"
+                if (c != null) return c to "$looperState:CURRENT_ACTIVITY_THREAD"
             }
+        }.onFailure {
+            return null to "$looperState:$firstError:CURRENT_FAIL:${it.javaClass.simpleName}:${it.cause?.javaClass?.simpleName ?: it.message ?: ""}"
         }
-        return null to "FAILED"
+
+        return null to "$looperState:$firstError"
     }
 }
