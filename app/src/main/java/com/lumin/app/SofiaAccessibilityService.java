@@ -22,27 +22,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Thin Samsung Text Call transport bridge.
- *
- * IMPORTANT: this service is deliberately NOT a second conversational brain.
- * REBORN Central/Qwen owns the conversation. This service only:
- *  - discovers Samsung Text Call
- *  - optionally forwards Samsung transcript as STT fallback
- *  - writes one REBORN reply and presses Send
- *
- * This avoids the old race where Accessibility and RebornCentral both called Qwen
- * and the UI got stuck on THINKING after the first scripted reply.
- */
+/** Thin Samsung Text Call transport bridge. RebornCentral/Qwen is the only brain. */
 public class SofiaAccessibilityService extends AccessibilityService {
     public static final String ACTION_SEND_REPLY = "com.lumin.app.SEND_REPLY";
     public static final String EXTRA_REPLY = "reply";
 
     private static final String SAMSUNG_INCALL = "com.samsung.android.incallui";
-    private static final long POLL_MS = 300L;
+    private static final long POLL_MS = 250L;
     private static final long STABLE_MS = 900L;
     private static final long SESSION_GONE_MS = 5000L;
     private static final long OPEN_COOLDOWN_MS = 1400L;
+    private static final long PENDING_RETRY_MS = 700L;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences diag;
@@ -50,6 +40,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private boolean destroyed;
     private long lastSamsungSeenAt;
     private long lastOpenAttemptAt;
+    private long lastPendingAttemptAt;
+    private boolean sendInFlight;
+    private String pendingReply = "";
     private String observedCandidate = "";
     private long observedChangedAt;
     private String lastForwardedCanonical = "";
@@ -74,8 +67,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
             String reply = clean(intent.getStringExtra(EXTRA_REPLY));
             if (reply.isEmpty()) return;
             lastReplyCanonical = canonical(reply);
-            setBridgeState("SENDING");
-            sendReply(reply);
+            pendingReply = reply;
+            sendInFlight = false;
+            setBridgeState("REPLY_QUEUED");
+            attemptPendingReply();
         }
     };
 
@@ -97,7 +92,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         else registerReceiver(commandReceiver, filter);
         destroyed = false;
         setBridgeState("WAITING_SAMSUNG");
-        log("service", "ATIVO · THIN SAMSUNG TRANSPORT · SINGLE REBORN BRAIN");
+        log("service", "ATIVO · THIN TRANSPORT · QUEUED SEND V2");
         main.removeCallbacks(poller);
         main.post(poller);
     }
@@ -112,7 +107,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo root = findSamsungRoot();
         long now = System.currentTimeMillis();
         if (root == null) {
-            if (lastSamsungSeenAt > 0 && now - lastSamsungSeenAt > SESSION_GONE_MS) {
+            if (!pendingReply.isEmpty()) setBridgeState("WAITING_SAMSUNG_WITH_REPLY");
+            else if (lastSamsungSeenAt > 0 && now - lastSamsungSeenAt > SESSION_GONE_MS) {
                 observedCandidate = "";
                 observedChangedAt = 0L;
                 lastForwardedCanonical = "";
@@ -127,14 +123,18 @@ public class SofiaAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo edit = findEditable(root);
         if (edit == null) {
             tryOpenTextCall(root);
-            setBridgeState("OPENING_TEXT_CALL");
+            setBridgeState(pendingReply.isEmpty() ? "OPENING_TEXT_CALL" : "OPENING_TEXT_CALL_FOR_REPLY");
+            return;
+        }
+
+        if (!pendingReply.isEmpty()) {
+            attemptPendingReply();
             return;
         }
 
         setBridgeState("LISTENING");
 
-        // Primary ears are the proven VOICE_CALL PCM path. Samsung transcript is only
-        // a fallback so we never feed the same turn to two independent pipelines.
+        // Primary ears are VOICE_CALL PCM. Samsung transcript is fallback only.
         if (RebornTranscriptionService.isRunning() && RebornTranscriptionService.isUsingExternalPcm()) return;
 
         String candidate = clean(findCustomerCandidate(root, edit));
@@ -164,15 +164,44 @@ public class SofiaAccessibilityService extends AccessibilityService {
         }
     }
 
+    private void attemptPendingReply() {
+        if (pendingReply.isEmpty() || sendInFlight) return;
+        long now = System.currentTimeMillis();
+        if (now - lastPendingAttemptAt < PENDING_RETRY_MS) return;
+        lastPendingAttemptAt = now;
+
+        AccessibilityNodeInfo root = findSamsungRoot();
+        AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
+        if (root == null || edit == null) {
+            if (root != null) tryOpenTextCall(root);
+            setBridgeState("WAITING_TEXT_CALL_FOR_REPLY");
+            return;
+        }
+
+        sendInFlight = true;
+        setBridgeState("SENDING");
+        final String reply = pendingReply;
+        edit.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+        edit.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+        Bundle args = new Bundle();
+        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, reply);
+        boolean set = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+        log("set_text", String.valueOf(set));
+        if (!set) {
+            sendInFlight = false;
+            setBridgeState("SET_TEXT_RETRY");
+            return;
+        }
+        main.postDelayed(() -> pressSend(reply, 0), 220L);
+    }
+
     /** Never clicks generic More/RTT. Only explicit Call Assistant/Text Call nodes. */
     private boolean tryOpenTextCall(AccessibilityNodeInfo root) {
         long now = System.currentTimeMillis();
         if (now - lastOpenAttemptAt < OPEN_COOLDOWN_MS) return false;
-
         AccessibilityNodeInfo target = findTextCallEntry(root);
         if (target == null) target = findExplicitCallAssistant(root);
         if (target == null) return false;
-
         AccessibilityNodeInfo clickable = clickableSelfOrParent(target);
         if (clickable == null) return false;
         lastOpenAttemptAt = now;
@@ -217,7 +246,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
         Rect editor = new Rect();
         edit.getBoundsInScreen(editor);
-
         for (int i = items.size() - 1; i >= 0; i--) {
             TextCandidate c = items.get(i);
             String s = clean(c.text);
@@ -226,7 +254,6 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (isSamsungChrome(canon)) continue;
             if (canon.equals(lastReplyCanonical)) continue;
             if (!c.bounds.isEmpty()) {
-                // Remote/customer bubbles are on the left; outgoing Samsung replies are right.
                 if (c.bounds.centerX() > (int) (screenWidth * 0.62f)) continue;
                 if (!editor.isEmpty() && c.bounds.top >= editor.top - dp(30)) continue;
             }
@@ -254,39 +281,16 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 l.contains("ligar lhe mais tarde") || l.contains("chamada de texto") || l.contains("text call") ||
                 l.contains("assistente de chamada") || l.contains("assistente de voz") || l.contains("converter a sua voz em texto") ||
                 l.contains("mantenha se em linha") || l.contains("se quiser continuar") || l.contains("rtt") ||
-                l.contains("desligar") || l.contains("teclado") || l.contains("altifalante") || l.contains("bluetooth") ||
-                l.contains("mensagem sugerida") || l.contains("sugestao");
-    }
-
-    private void sendReply(String reply) {
-        main.post(() -> {
-            AccessibilityNodeInfo root = findSamsungRoot();
-            AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
-            if (root == null || edit == null) {
-                log("send", "NO_EDITOR");
-                setBridgeState("WAITING_TEXT_CALL");
-                return;
-            }
-
-            edit.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
-            edit.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            Bundle args = new Bundle();
-            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, reply);
-            boolean set = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
-            log("set_text", String.valueOf(set));
-            if (!set) {
-                setBridgeState("SEND_FAILED");
-                return;
-            }
-            main.postDelayed(() -> pressSend(reply, 0), 220L);
-        });
+                l.contains("mudada para chamada de voz") || l.contains("desligar") || l.contains("teclado") ||
+                l.contains("altifalante") || l.contains("bluetooth") || l.contains("mensagem sugerida") || l.contains("sugestao");
     }
 
     private void pressSend(String expected, int attempt) {
         AccessibilityNodeInfo root = findSamsungRoot();
         AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
         if (root == null || edit == null) {
-            setBridgeState("SEND_FAILED");
+            sendInFlight = false;
+            setBridgeState("WAITING_TEXT_CALL_FOR_REPLY");
             return;
         }
 
@@ -319,16 +323,29 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private void verifySent(String expected, int nextAttempt) {
         AccessibilityNodeInfo root = findSamsungRoot();
         AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
-        String current = edit == null || edit.getText() == null ? "" : clean(edit.getText().toString());
+
+        // Losing the editor is NOT proof that the message was sent. Keep it queued and retry.
+        if (root == null || edit == null) {
+            sendInFlight = false;
+            setBridgeState("VERIFY_WAITING_TEXT_CALL");
+            return;
+        }
+
+        String current = edit.getText() == null ? "" : clean(edit.getText().toString());
         if (current.isEmpty() || !current.equals(expected)) {
             log("send", "SEND_CONFIRMED");
+            if (expected.equals(pendingReply)) pendingReply = "";
+            sendInFlight = false;
             setBridgeState("LISTENING");
             return;
         }
-        if (nextAttempt <= 2) pressSend(expected, nextAttempt);
-        else {
-            log("send", "SEND_NOT_CONFIRMED");
-            setBridgeState("SEND_FAILED");
+
+        if (nextAttempt <= 2) {
+            pressSend(expected, nextAttempt);
+        } else {
+            log("send", "SEND_NOT_CONFIRMED_REQUEUED");
+            sendInFlight = false;
+            setBridgeState("SEND_RETRY_QUEUED");
         }
     }
 
