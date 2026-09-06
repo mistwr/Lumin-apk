@@ -2,7 +2,7 @@ name: Build REBORN AI Unified
 
 on:
   push:
-    branches: [ main, reborn-ai-unified, sofia-build53, sofia-build53-hotfix, sofia-build53-2, sofia-build54-console, sofia-build54-1-recover, sofia-build55-1-overlay-hide ]
+    branches: [ main, reborn-ai-unified, reborn-voice-agent-v2, sofia-build53, sofia-build53-hotfix, sofia-build53-2, sofia-build54-console, sofia-build54-1-recover, sofia-build55-1-overlay-hide ]
   workflow_dispatch:
 
 jobs:
