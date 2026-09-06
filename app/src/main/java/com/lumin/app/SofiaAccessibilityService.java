@@ -22,7 +22,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/** Thin Samsung Text Call transport bridge. RebornCentral/Qwen is the only brain. */
+/**
+ * Thin Samsung Text Call transport.
+ * REBORN Central/Qwen is the only brain; SamsungBridgeSupervisor owns recovery/queue state.
+ */
 public class SofiaAccessibilityService extends AccessibilityService {
     public static final String ACTION_SEND_REPLY = "com.lumin.app.SEND_REPLY";
     public static final String EXTRA_REPLY = "reply";
@@ -31,18 +34,13 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private static final long POLL_MS = 250L;
     private static final long STABLE_MS = 900L;
     private static final long SESSION_GONE_MS = 5000L;
-    private static final long OPEN_COOLDOWN_MS = 1400L;
-    private static final long PENDING_RETRY_MS = 700L;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences diag;
     private SharedPreferences control;
+    private SamsungBridgeSupervisor supervisor;
     private boolean destroyed;
     private long lastSamsungSeenAt;
-    private long lastOpenAttemptAt;
-    private long lastPendingAttemptAt;
-    private boolean sendInFlight;
-    private String pendingReply = "";
     private String observedCandidate = "";
     private long observedChangedAt;
     private String lastForwardedCanonical = "";
@@ -67,9 +65,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             String reply = clean(intent.getStringExtra(EXTRA_REPLY));
             if (reply.isEmpty()) return;
             lastReplyCanonical = canonical(reply);
-            pendingReply = reply;
-            sendInFlight = false;
-            setBridgeState("REPLY_QUEUED");
+            if (supervisor != null) supervisor.enqueue(reply);
             attemptPendingReply();
         }
     };
@@ -87,12 +83,14 @@ public class SofiaAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
         control = getSharedPreferences("sofia_control", MODE_PRIVATE);
+        supervisor = new SamsungBridgeSupervisor(this);
+
         IntentFilter filter = new IntentFilter(ACTION_SEND_REPLY);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(commandReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         else registerReceiver(commandReceiver, filter);
+
         destroyed = false;
-        setBridgeState("WAITING_SAMSUNG");
-        log("service", "ATIVO · THIN TRANSPORT · QUEUED SEND V2");
+        log("service", "ATIVO · SAMSUNG BRIDGE SUPERVISOR V1 · SINGLE BRAIN");
         main.removeCallbacks(poller);
         main.post(poller);
     }
@@ -104,37 +102,45 @@ public class SofiaAccessibilityService extends AccessibilityService {
     }
 
     private void inspectSamsungSurface() {
-        AccessibilityNodeInfo root = findSamsungRoot();
         long now = System.currentTimeMillis();
+        if (supervisor != null) supervisor.watchdog(now);
+
+        AccessibilityNodeInfo root = findSamsungRoot();
         if (root == null) {
-            if (!pendingReply.isEmpty()) setBridgeState("WAITING_SAMSUNG_WITH_REPLY");
-            else if (lastSamsungSeenAt > 0 && now - lastSamsungSeenAt > SESSION_GONE_MS) {
-                observedCandidate = "";
-                observedChangedAt = 0L;
-                lastForwardedCanonical = "";
-                lastReplyCanonical = "";
-                setBridgeState("WAITING_SAMSUNG");
+            if (supervisor != null) supervisor.onSamsungVisible(false);
+            if (lastSamsungSeenAt > 0 && now - lastSamsungSeenAt > SESSION_GONE_MS &&
+                    (supervisor == null || !supervisor.hasPending())) {
+                resetSurfaceMemory();
                 lastSamsungSeenAt = 0L;
             }
             return;
         }
+
         lastSamsungSeenAt = now;
+        if (supervisor != null) supervisor.onSamsungVisible(true);
+
+        boolean voiceMode = containsText(root, "mudada para chamada de voz") ||
+                containsText(root, "changed to voice call") ||
+                containsText(root, "mudar para chamada de texto");
+        if (voiceMode && supervisor != null) supervisor.onVoiceModeDetected();
 
         AccessibilityNodeInfo edit = findEditable(root);
         if (edit == null) {
-            tryOpenTextCall(root);
-            setBridgeState(pendingReply.isEmpty() ? "OPENING_TEXT_CALL" : "OPENING_TEXT_CALL_FOR_REPLY");
+            if (supervisor != null) {
+                supervisor.onTextCallReady(false);
+                if (supervisor.shouldAttemptOpen(now)) tryOpenTextCall(root);
+            }
             return;
         }
 
-        if (!pendingReply.isEmpty()) {
+        if (supervisor != null) supervisor.onTextCallReady(true);
+
+        if (supervisor != null && supervisor.hasPending()) {
             attemptPendingReply();
             return;
         }
 
-        setBridgeState("LISTENING");
-
-        // Primary ears are VOICE_CALL PCM. Samsung transcript is fallback only.
+        // VOICE_CALL PCM is the primary ear. Samsung transcript is fallback only.
         if (RebornTranscriptionService.isRunning() && RebornTranscriptionService.isUsingExternalPcm()) return;
 
         String candidate = clean(findCustomerCandidate(root, edit));
@@ -158,56 +164,141 @@ public class SofiaAccessibilityService extends AccessibilityService {
             lastForwardedCanonical = canon;
             observedCandidate = "";
             observedChangedAt = 0L;
-            control.edit().putString("live_customer", candidate).putString("live_customer_partial", "").apply();
+            control.edit().putString("live_customer", candidate)
+                    .putString("live_customer_partial", "").apply();
             log("fallback_customer", candidate);
             RebornCentral.onCustomerText(candidate);
         }
     }
 
     private void attemptPendingReply() {
-        if (pendingReply.isEmpty() || sendInFlight) return;
-        long now = System.currentTimeMillis();
-        if (now - lastPendingAttemptAt < PENDING_RETRY_MS) return;
-        lastPendingAttemptAt = now;
+        if (supervisor == null) return;
+        SamsungBridgeSupervisor.PendingReply pending = supervisor.nextForSend(System.currentTimeMillis());
+        if (pending == null) return;
 
         AccessibilityNodeInfo root = findSamsungRoot();
         AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
         if (root == null || edit == null) {
-            if (root != null) tryOpenTextCall(root);
-            setBridgeState("WAITING_TEXT_CALL_FOR_REPLY");
+            supervisor.retry(pending.id, "editor_missing_before_send");
+            if (root != null && supervisor.shouldAttemptOpen(System.currentTimeMillis())) tryOpenTextCall(root);
             return;
         }
 
-        sendInFlight = true;
-        setBridgeState("SENDING");
-        final String reply = pendingReply;
         edit.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
         edit.performAction(AccessibilityNodeInfo.ACTION_CLICK);
         Bundle args = new Bundle();
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, reply);
+        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, pending.text);
         boolean set = edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
         log("set_text", String.valueOf(set));
+        log("send_reply_id", String.valueOf(pending.id));
         if (!set) {
-            sendInFlight = false;
-            setBridgeState("SET_TEXT_RETRY");
+            supervisor.retry(pending.id, "set_text_failed");
             return;
         }
-        main.postDelayed(() -> pressSend(reply, 0), 220L);
+
+        main.postDelayed(() -> pressSend(pending, 0), 220L);
     }
 
-    /** Never clicks generic More/RTT. Only explicit Call Assistant/Text Call nodes. */
+    /** Never clicks generic More/RTT. Only explicit Text Call / Call Assistant nodes. */
     private boolean tryOpenTextCall(AccessibilityNodeInfo root) {
-        long now = System.currentTimeMillis();
-        if (now - lastOpenAttemptAt < OPEN_COOLDOWN_MS) return false;
         AccessibilityNodeInfo target = findTextCallEntry(root);
         if (target == null) target = findExplicitCallAssistant(root);
-        if (target == null) return false;
+        if (target == null) {
+            log("auto_open", "NO_EXPLICIT_TEXT_CALL_NODE");
+            return false;
+        }
         AccessibilityNodeInfo clickable = clickableSelfOrParent(target);
         if (clickable == null) return false;
-        lastOpenAttemptAt = now;
         boolean ok = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-        log("auto_open", ok ? "EXPLICIT_ASSIST_CLICKED" : "EXPLICIT_ASSIST_CLICK_FAILED");
+        log("auto_open", ok ? "EXPLICIT_TEXT_CALL_CLICKED" : "EXPLICIT_TEXT_CALL_CLICK_FAILED");
         return ok;
+    }
+
+    private void pressSend(SamsungBridgeSupervisor.PendingReply pending, int attempt) {
+        if (supervisor == null) return;
+        AccessibilityNodeInfo root = findSamsungRoot();
+        AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
+        if (root == null || edit == null) {
+            supervisor.retry(pending.id, "editor_lost_before_press_send");
+            return;
+        }
+
+        AccessibilityNodeInfo send = findSendButton(root);
+        if (send != null) {
+            AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
+            if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                supervisor.markVerifying(pending.id);
+                main.postDelayed(() -> verifySent(pending, attempt + 1), 450L);
+                return;
+            }
+            Rect r = new Rect();
+            send.getBoundsInScreen(r);
+            if (!r.isEmpty()) {
+                tapBounds(r);
+                supervisor.markVerifying(pending.id);
+                main.postDelayed(() -> verifySent(pending, attempt + 1), 500L);
+                return;
+            }
+        }
+
+        if (attempt == 0 && Build.VERSION.SDK_INT >= 30) {
+            edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+            supervisor.markVerifying(pending.id);
+            main.postDelayed(() -> verifySent(pending, 1), 450L);
+            return;
+        }
+
+        tapRightOfEditor(edit);
+        supervisor.markVerifying(pending.id);
+        main.postDelayed(() -> verifySent(pending, attempt + 1), 500L);
+    }
+
+    private void verifySent(SamsungBridgeSupervisor.PendingReply pending, int nextAttempt) {
+        if (supervisor == null) return;
+        AccessibilityNodeInfo root = findSamsungRoot();
+        AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
+
+        // Losing the editor is never proof of success. Recover Text Call and keep reply queued.
+        if (root == null || edit == null) {
+            supervisor.retry(pending.id, "editor_lost_during_verify");
+            return;
+        }
+
+        String current = edit.getText() == null ? "" : clean(edit.getText().toString());
+        boolean outgoingVisible = hasOutgoingBubble(root, pending.text);
+
+        if (outgoingVisible || (current.isEmpty() && nextAttempt >= 2)) {
+            log("send", outgoingVisible ? "CONFIRMED_OUTGOING_BUBBLE" : "CONFIRMED_EDITOR_CLEARED");
+            supervisor.confirmSent(pending.id);
+            return;
+        }
+
+        if (!current.equals(pending.text) && !current.isEmpty()) {
+            // Samsung replaced the editor text with another value; do not duplicate the reply.
+            log("send", "EDITOR_CHANGED_AFTER_SEND");
+            supervisor.confirmSent(pending.id);
+            return;
+        }
+
+        if (nextAttempt <= 2) {
+            pressSend(pending, nextAttempt);
+        } else {
+            log("send", "NOT_CONFIRMED_REQUEUE");
+            supervisor.retry(pending.id, "send_not_confirmed");
+        }
+    }
+
+    private boolean hasOutgoingBubble(AccessibilityNodeInfo root, String expected) {
+        if (root == null || expected == null) return false;
+        String target = canonical(expected);
+        int width = getResources().getDisplayMetrics().widthPixels;
+        List<TextCandidate> items = new ArrayList<>();
+        collectTexts(root, items, null);
+        for (TextCandidate c : items) {
+            if (!target.equals(canonical(c.text))) continue;
+            if (c.bounds.isEmpty() || c.bounds.centerX() >= (int) (width * 0.48f)) return true;
+        }
+        return false;
     }
 
     private AccessibilityNodeInfo findTextCallEntry(AccessibilityNodeInfo node) {
@@ -245,7 +336,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
         collectTexts(root, items, edit);
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
         Rect editor = new Rect();
-        edit.getBoundsInScreen(editor);
+        if (edit != null) edit.getBoundsInScreen(editor);
+
         for (int i = items.size() - 1; i >= 0; i--) {
             TextCandidate c = items.get(i);
             String s = clean(c.text);
@@ -258,7 +350,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 if (!editor.isEmpty() && c.bounds.top >= editor.top - dp(30)) continue;
             }
             String meta = canonical(c.id + " " + c.desc);
-            if (meta.contains("outgoing") || meta.contains("sender") || meta.contains("assistant reply") || meta.contains("my message")) continue;
+            if (meta.contains("outgoing") || meta.contains("sender") ||
+                    meta.contains("assistant reply") || meta.contains("my message")) continue;
             return s;
         }
         return "";
@@ -275,78 +368,29 @@ public class SofiaAccessibilityService extends AccessibilityService {
         for (int i = 0; i < node.getChildCount(); i++) collectTexts(node.getChild(i), out, edit);
     }
 
+    private boolean containsText(AccessibilityNodeInfo node, String needle) {
+        if (node == null || needle == null) return false;
+        String n = canonical(needle);
+        String t = canonical(value(node.getText()));
+        String d = canonical(value(node.getContentDescription()));
+        if ((!t.isEmpty() && t.contains(n)) || (!d.isEmpty() && d.contains(n))) return true;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (containsText(node.getChild(i), needle)) return true;
+        }
+        return false;
+    }
+
     private boolean isSamsungChrome(String l) {
-        return l.isEmpty() || l.equals("escrever resposta") || l.equals("escrever") || l.equals("enviar") || l.equals("send") ||
-                l.equals("repetir") || l.equals("urgente") || l.equals("quem fala") || l.equals("mais") ||
-                l.contains("ligar lhe mais tarde") || l.contains("chamada de texto") || l.contains("text call") ||
-                l.contains("assistente de chamada") || l.contains("assistente de voz") || l.contains("converter a sua voz em texto") ||
-                l.contains("mantenha se em linha") || l.contains("se quiser continuar") || l.contains("rtt") ||
-                l.contains("mudada para chamada de voz") || l.contains("desligar") || l.contains("teclado") ||
-                l.contains("altifalante") || l.contains("bluetooth") || l.contains("mensagem sugerida") || l.contains("sugestao");
-    }
-
-    private void pressSend(String expected, int attempt) {
-        AccessibilityNodeInfo root = findSamsungRoot();
-        AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
-        if (root == null || edit == null) {
-            sendInFlight = false;
-            setBridgeState("WAITING_TEXT_CALL_FOR_REPLY");
-            return;
-        }
-
-        AccessibilityNodeInfo send = findSendButton(root);
-        if (send != null) {
-            AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
-            if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                main.postDelayed(() -> verifySent(expected, attempt + 1), 450L);
-                return;
-            }
-            Rect r = new Rect();
-            send.getBoundsInScreen(r);
-            if (!r.isEmpty()) {
-                tapBounds(r);
-                main.postDelayed(() -> verifySent(expected, attempt + 1), 500L);
-                return;
-            }
-        }
-
-        if (attempt == 0 && Build.VERSION.SDK_INT >= 30) {
-            edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
-            main.postDelayed(() -> verifySent(expected, 1), 450L);
-            return;
-        }
-
-        tapRightOfEditor(edit);
-        main.postDelayed(() -> verifySent(expected, attempt + 1), 500L);
-    }
-
-    private void verifySent(String expected, int nextAttempt) {
-        AccessibilityNodeInfo root = findSamsungRoot();
-        AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
-
-        // Losing the editor is NOT proof that the message was sent. Keep it queued and retry.
-        if (root == null || edit == null) {
-            sendInFlight = false;
-            setBridgeState("VERIFY_WAITING_TEXT_CALL");
-            return;
-        }
-
-        String current = edit.getText() == null ? "" : clean(edit.getText().toString());
-        if (current.isEmpty() || !current.equals(expected)) {
-            log("send", "SEND_CONFIRMED");
-            if (expected.equals(pendingReply)) pendingReply = "";
-            sendInFlight = false;
-            setBridgeState("LISTENING");
-            return;
-        }
-
-        if (nextAttempt <= 2) {
-            pressSend(expected, nextAttempt);
-        } else {
-            log("send", "SEND_NOT_CONFIRMED_REQUEUED");
-            sendInFlight = false;
-            setBridgeState("SEND_RETRY_QUEUED");
-        }
+        return l.isEmpty() || l.equals("escrever resposta") || l.equals("escrever") ||
+                l.equals("enviar") || l.equals("send") || l.equals("repetir") ||
+                l.equals("urgente") || l.equals("quem fala") || l.equals("mais") ||
+                l.contains("ligar lhe mais tarde") || l.contains("chamada de texto") ||
+                l.contains("text call") || l.contains("assistente de chamada") ||
+                l.contains("assistente de voz") || l.contains("converter a sua voz em texto") ||
+                l.contains("mantenha se em linha") || l.contains("se quiser continuar") ||
+                l.contains("rtt") || l.contains("mudada para chamada de voz") ||
+                l.contains("desligar") || l.contains("teclado") || l.contains("altifalante") ||
+                l.contains("bluetooth") || l.contains("mensagem sugerida") || l.contains("sugestao");
     }
 
     private AccessibilityNodeInfo findSendButton(AccessibilityNodeInfo node) {
@@ -354,8 +398,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
         String text = lower(node.getText());
         String desc = lower(node.getContentDescription());
         String id = lower(node.getViewIdResourceName());
-        if (text.contains("enviar") || text.equals("send") || desc.contains("enviar") || desc.contains("send") ||
-                id.contains("send") || id.contains("text_call_send") || id.contains("message_send")) return node;
+        if (text.contains("enviar") || text.equals("send") || desc.contains("enviar") ||
+                desc.contains("send") || id.contains("send") || id.contains("text_call_send") ||
+                id.contains("message_send")) return node;
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo r = findSendButton(node.getChild(i));
             if (r != null) return r;
@@ -379,7 +424,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
     }
 
     private boolean isSamsungRoot(AccessibilityNodeInfo root) {
-        return root != null && root.getPackageName() != null && SAMSUNG_INCALL.contentEquals(root.getPackageName());
+        return root != null && root.getPackageName() != null &&
+                SAMSUNG_INCALL.contentEquals(root.getPackageName());
     }
 
     private AccessibilityNodeInfo findEditable(AccessibilityNodeInfo node) {
@@ -421,10 +467,11 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, 80)).build(), null, null);
     }
 
-    private void setBridgeState(String state) {
-        if (control == null) control = getSharedPreferences("sofia_control", MODE_PRIVATE);
-        control.edit().putString("turn_state", state).putString("bridge_state", state).apply();
-        log("turn_state", state);
+    private void resetSurfaceMemory() {
+        observedCandidate = "";
+        observedChangedAt = 0L;
+        lastForwardedCanonical = "";
+        lastReplyCanonical = "";
     }
 
     private String canonical(String s) {
@@ -433,7 +480,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
         return x.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9€]+", " ").trim();
     }
 
-    private String clean(String s) { return s == null ? "" : s.replace('\n', ' ').replaceAll("\\s+", " ").trim(); }
+    private String clean(String s) {
+        return s == null ? "" : s.replace('\n', ' ').replaceAll("\\s+", " ").trim();
+    }
     private String lower(CharSequence s) { return s == null ? "" : s.toString().toLowerCase(Locale.ROOT); }
     private String lower(String s) { return s == null ? "" : s.toLowerCase(Locale.ROOT); }
     private String safe(String s) { return s == null ? "" : s.replace('\n', ' '); }
@@ -443,7 +492,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
     private void log(String key, String value) {
         if (diag == null) diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
-        diag.edit().putString(key, value == null ? "" : value).putLong("updated", System.currentTimeMillis()).apply();
+        diag.edit().putString(key, value == null ? "" : value)
+                .putLong("updated", System.currentTimeMillis()).apply();
     }
 
     @Override public void onInterrupt() { log("service", "INTERRUPTED"); }
@@ -452,6 +502,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         destroyed = true;
         main.removeCallbacksAndMessages(null);
         try { unregisterReceiver(commandReceiver); } catch (Throwable ignored) {}
+        if (supervisor != null) supervisor.resetSession();
         super.onDestroy();
     }
 }
