@@ -8,7 +8,7 @@ s = path.read_text()
 orig = s
 
 # Extra stdlib imports for local HTTP brain adapter.
-s = s.replace('import (\n\t"encoding/json"', 'import (\n\t"bytes"\n\t"encoding/json"\n\t"io"\n\t"net/http"')
+s = s.replace('import (\n\t"encoding/json"', 'import (\n\t"bytes"\n\t"encoding/json"\n\t"fmt"\n\t"io"\n\t"net/http"')
 
 # Do not instantiate OpenAI realtime controller. Deepgram STT/TTS remains; REBORN brain handles text turns.
 old = '''\tchatbot, ok := voiceai.CreateOPENAIWebsocketDialogController("", OPMODE)\n\tif ok {\n\t\tvb.chatController = chatbot\n\t} else {\n\t\treturn nil, false\n\t}\n'''
