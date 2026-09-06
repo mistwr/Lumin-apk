@@ -22,19 +22,29 @@ public class SofiaEngine {
     public static Decision fastDecision(String customer, SofiaMemory memory) {
         if (customer == null) customer = "";
         String t = customer.trim();
-        String n = normalize(t);
+        String n = normalize(t).replaceAll("[^a-z0-9 ]+", " ").replaceAll("\\s+", " ").trim();
 
         if (n.contains("poupar") || n.contains("quero falar com") || n.contains("consultor")) {
             memory.put("handoff", true);
             return new Decision("Perfeito. Vou deixar o pedido preparado para um consultor MyPoupar verificar consigo a melhor opção.", true, "HANDOFF", true);
         }
 
+        // Consentimento curto depois da abertura: não mandar um simples "sim/diga/pode"
+        // para o Qwen local. Isto elimina latências enormes no primeiro turno real.
+        boolean affirmative = n.equals("sim") || n.equals("sim diga") || n.equals("diga") ||
+                n.equals("pode") || n.equals("sim pode") || n.equals("claro") ||
+                n.equals("forca") || n.equals("forca diga") || n.equals("vamos") ||
+                n.equals("pode falar") || n.equals("sim pode falar");
+        if (affirmative && !memory.has("operator")) {
+            memory.put("consent", true);
+            memory.put("asked_operator", true);
+            return new Decision("Perfeito. Atualmente está com que operador?", true, "QUALIFICATION", false);
+        }
+
         // Reclamações, objeções e pedidos de esclarecimento devem ir ao Qwen.
-        // Isto evita o efeito "papagaio" de repetir sempre a mesma pergunta rígida.
-        if (n.contains("nao percebi") || n.contains("não percebi") || n.contains("repete") ||
-                n.contains("repetir") || n.contains("estas sempre") || n.contains("estás sempre") ||
-                n.contains("porque") || n.contains("por que") || n.contains("nao quero") ||
-                n.contains("não quero") || n.contains("agora nao") || n.contains("agora não") ||
+        if (n.contains("nao percebi") || n.contains("repete") || n.contains("repetir") ||
+                n.contains("estas sempre") || n.contains("porque") || n.contains("por que") ||
+                n.contains("nao quero") || n.contains("agora nao") ||
                 n.contains("liga mais tarde") || n.contains("ligue mais tarde")) {
             return null;
         }
@@ -69,7 +79,6 @@ public class SofiaEngine {
         if (n.contains("televisao") || n.contains("tv")) { memory.put("tv", true); learnedSomething = true; }
         if (n.contains("internet") || n.contains("fibra") || n.contains("wifi")) { memory.put("internet", true); learnedSomething = true; }
 
-        // Só usa fast-path quando entrou um facto novo. Nos restantes turnos deixa o cérebro local conversar.
         if (!learnedSomething) return null;
 
         if (memory.has("mobile_lines") && !memory.has("operator") && !memory.has("asked_operator")) {
@@ -97,7 +106,7 @@ public class SofiaEngine {
         if (n.contains("satisfeito") || n.contains("estou bem") || n.contains("sem problemas")) memory.put("satisfaction", "satisfied");
         if (n.contains("caro") || n.contains("pago muito") || n.contains("baixar") || n.contains("preco")) memory.put("main_problem", "price");
         if (n.contains("internet lenta") || n.contains("wifi") || n.contains("falha")) memory.put("main_problem", "quality");
-        if (n.contains("mais tarde") || n.contains("agora nao") || n.contains("agora não")) memory.put("callback_requested", true);
+        if (n.contains("mais tarde") || n.contains("agora nao")) memory.put("callback_requested", true);
     }
 
     public static String buildPrompt(String customer, SofiaMemory memory) {
