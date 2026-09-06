@@ -3,8 +3,11 @@ from pathlib import Path
 import sys
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else "/opt/reborn/AsteriskVoiceBridge")
-path = root / "voicebot" / "voicebot.go"
-s = path.read_text()
+voicebot = root / "voicebot" / "voicebot.go"
+main_go = root / "main.go"
+ariman = root / "ariman" / "ariman.go"
+
+s = voicebot.read_text()
 orig = s
 
 # Extra stdlib imports for local HTTP brain adapter.
@@ -14,6 +17,17 @@ s = s.replace('import (\n\t"encoding/json"', 'import (\n\t"bytes"\n\t"encoding/j
 old = '''\tchatbot, ok := voiceai.CreateOPENAIWebsocketDialogController("", OPMODE)\n\tif ok {\n\t\tvb.chatController = chatbot\n\t} else {\n\t\treturn nil, false\n\t}\n'''
 s = s.replace(old, '\t// REBORN V2: OpenAI realtime controller intentionally disabled.\n\tvb.chatController = nil\n')
 s = s.replace('\tvb.chatController.SetCallbacks(vb)\n', '\tif vb.chatController != nil { vb.chatController.SetCallbacks(vb) }\n')
+
+# ARI connector: use environment instead of upstream demo credentials.
+old = 'aricontroller, ok := ariman.CreateConnector("voicebot", "quagmire", "alphabetsoup", http_url, ws_url)'
+new = '''ariApp := os.Getenv("ASTERISK_STASIS_APP")
+\tif ariApp == "" { ariApp = "voicebot" }
+\tariUser := os.Getenv("ASTERISK_ARI_USER")
+\tif ariUser == "" { ariUser = "reborn" }
+\tariPass := os.Getenv("ASTERISK_ARI_PASSWORD")
+\tif ariPass == "" { ariPass = os.Getenv("ARI_PASSWORD") }
+\taricontroller, ok := ariman.CreateConnector(ariApp, ariUser, ariPass, http_url, ws_url)'''
+s = s.replace(old, new)
 
 # No OpenAI dialog lifecycle required.
 old = '''\tchatend := v.chatController.DialogComplete(callid)\n\tif chatend {\n\t\tlog.Info("BOT:terminateCall", "Status", "ChatCompleteSuccess")\n\t} else {\n\t\tlog.Info("BOT:terminateCall", "Status", "ChatCompleteFailed")\n\t}\n'''
@@ -32,6 +46,11 @@ s = s.replace(old, new)
 
 # Guard optional OpenAI-only tool updates from upstream studio commander.
 s = s.replace('\t\tv.chatController.UpdateDialog(dialogid, functionset, prompt)\n', '\t\tif v.chatController != nil { v.chatController.UpdateDialog(dialogid, functionset, prompt) }\n')
+
+# Preserve PT accents and use PT-PT TTS language.
+ascii_block = '''\ttext = strings.Map(func(r rune) rune {\n\t\tif r > 31 && r < 127 {\n\t\t\treturn r\n\t\t}\n\t\treturn -1\n\t}, text)\n'''
+s = s.replace(ascii_block, '')
+s = s.replace('v.ttsprovider.AddText(callid, text, "voicebot", "en-US")', 'v.ttsprovider.AddText(callid, text, "voicebot", "pt-PT")')
 
 # Inject local brain helper before SendText.
 marker = 'func (v VoiceBot) SendText(callid string, text string) {'
@@ -73,6 +92,17 @@ if marker not in s:
 s = s.replace(marker, helper + marker, 1)
 
 if s == orig:
-    raise SystemExit("no changes made")
-path.write_text(s)
-print(f"Patched {path} for REBORN local brain")
+    raise SystemExit("no voicebot changes made")
+voicebot.write_text(s)
+
+# Main defaults to PT-PT.
+m = main_go.read_text()
+m = m.replace('voicebot.CreateVoiceBot("tango", "conversationalai", "en-US")', 'voicebot.CreateVoiceBot("sofia", "conversationalai", "pt-PT")')
+main_go.write_text(m)
+
+# Asterisk host can be overridden for container/network deployments.
+a = ariman.read_text()
+a = a.replace('AST_ADD  = "127.0.0.1"', 'AST_ADD  = "127.0.0.1"')
+ariman.write_text(a)
+
+print(f"Patched {voicebot} for REBORN local PT-PT brain")
