@@ -21,9 +21,18 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
+/**
+ * Samsung Text Call bridge.
+ *
+ * Responsibilities are intentionally narrow:
+ *  - discover/open Samsung Text Call
+ *  - poll the Samsung transcript until one customer turn is stable
+ *  - hand the stable turn to RebornConversationOrchestrator
+ *  - write exactly one final reply into Samsung and press Send
+ *
+ * The bridge does not call Qwen directly and does not own sales logic.
+ */
 public class SofiaAccessibilityService extends AccessibilityService {
     public static final String ACTION_SEND_REPLY = "com.lumin.app.SEND_REPLY";
     public static final String EXTRA_REPLY = "reply";
@@ -38,21 +47,22 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private enum TurnState { IDLE, LISTENING, STABILIZING, THINKING, SENDING, WAITING_REMOTE, MANUAL }
 
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final SofiaMemory memory = new SofiaMemory();
 
     private SharedPreferences diag;
     private SharedPreferences control;
+    private RebornConversationOrchestrator brain;
+
     private volatile TurnState turnState = TurnState.IDLE;
-    private boolean destroyed = false;
-    private boolean autoIntroSent = false;
-    private long lastSamsungSeenAt = 0L;
-    private long lastTextCallReadyAt = 0L;
-    private long lastAutoOpenAttemptAt = 0L;
+    private boolean destroyed;
+    private boolean autoIntroSent;
+    private long lastSamsungSeenAt;
+    private long lastTextCallReadyAt;
+    private long lastAutoOpenAttemptAt;
     private String observedCandidate = "";
-    private long observedChangedAt = 0L;
+    private long observedChangedAt;
     private String lastProcessedCanonical = "";
-    private long lastProcessedAt = 0L;
+    private long lastProcessedAt;
     private String lastCustomer = "";
     private String transcript = "";
 
@@ -61,6 +71,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (intent == null || !ACTION_SEND_REPLY.equals(intent.getAction())) return;
             String reply = intent.getStringExtra(EXTRA_REPLY);
             if (reply == null || reply.trim().isEmpty()) return;
+            if (brain != null) brain.setAssistantMessage(reply.trim());
             setTurnState(TurnState.SENDING);
             sendReply(reply.trim(), true);
         }
@@ -69,8 +80,11 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private final Runnable poller = new Runnable() {
         @Override public void run() {
             if (destroyed) return;
-            try { inspectSamsungSurface("POLL"); }
-            catch (Throwable t) { log("poll_error", t.getClass().getSimpleName() + ": " + safe(t.getMessage())); }
+            try {
+                inspectSamsungSurface("POLL");
+            } catch (Throwable t) {
+                log("poll_error", t.getClass().getSimpleName() + ": " + safe(t.getMessage()));
+            }
             main.postDelayed(this, POLL_MS);
         }
     };
@@ -80,12 +94,15 @@ public class SofiaAccessibilityService extends AccessibilityService {
         diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
         control = getSharedPreferences("sofia_control", MODE_PRIVATE);
         if (!control.contains("mode")) control.edit().putString("mode", "AUTO").apply();
+        brain = new RebornConversationOrchestrator(this, memory);
+
         IntentFilter filter = new IntentFilter(ACTION_SEND_REPLY);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(commandReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         else registerReceiver(commandReceiver, filter);
+
         destroyed = false;
         setTurnState(TurnState.IDLE);
-        log("service", "ATIVO · POLLING 300ms");
+        log("service", "ATIVO · SAMSUNG BRIDGE + REBORN BRAIN · POLLING 300ms");
         main.removeCallbacks(poller);
         main.post(poller);
     }
@@ -99,6 +116,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private void inspectSamsungSurface(String source) {
         AccessibilityNodeInfo root = findSamsungRoot();
         long now = System.currentTimeMillis();
+
         if (root == null) {
             if (lastSamsungSeenAt > 0 && now - lastSamsungSeenAt > SESSION_GONE_MS) resetSessionSurface();
             return;
@@ -126,16 +144,20 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
         if ("AUTO".equals(currentMode) && !autoIntroSent) {
             autoIntroSent = true;
-            memory.setLastAssistant(AUTO_INTRO);
+            if (brain != null) brain.setAssistantMessage(AUTO_INTRO);
             appendTranscript("REBORN", AUTO_INTRO);
             control.edit().putString("suggested_reply", AUTO_INTRO).apply();
-            log("path", "AUTO_INTRO");
+            log("brain_path", "SCRIPTED_INTRO");
             setTurnState(TurnState.SENDING);
             sendReply(AUTO_INTRO, false);
             return;
         }
 
         if (turnState == TurnState.THINKING || turnState == TurnState.SENDING || turnState == TurnState.WAITING_REMOTE) return;
+        if (brain != null && brain.isBusy()) {
+            setTurnState(TurnState.THINKING);
+            return;
+        }
 
         String candidate = clean(findCustomerCandidate(root, edit));
         if (candidate.isEmpty()) {
@@ -146,7 +168,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
         }
 
         String canon = canonical(candidate);
-        if (canon.equals(canonical(memory.getLastAssistant()))) return;
+        String lastAssistant = brain == null ? memory.getLastAssistant() : brain.lastReply();
+        if (!lastAssistant.isEmpty() && canon.equals(canonical(lastAssistant))) return;
+
         if (canon.equals(lastProcessedCanonical) && now - lastProcessedAt < DUPLICATE_WINDOW_MS) {
             if (turnState == TurnState.STABILIZING) setTurnState(TurnState.LISTENING);
             return;
@@ -172,59 +196,69 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private void processCustomerTurn(String customer) {
         String canon = canonical(customer);
         if (canon.isEmpty()) return;
+
         long now = System.currentTimeMillis();
         if (canon.equals(lastProcessedCanonical) && now - lastProcessedAt < DUPLICATE_WINDOW_MS) return;
 
         lastProcessedCanonical = canon;
         lastProcessedAt = now;
         lastCustomer = customer;
-        control.edit().putString("live_customer", customer).putString("live_customer_partial", "").apply();
+        control.edit()
+                .putString("live_customer", customer)
+                .putString("live_customer_partial", "")
+                .apply();
         log("last_customer", customer);
         appendTranscript("Cliente", customer);
-        SofiaEngine.learnFreeText(customer, memory);
 
-        String currentMode = mode();
+        final String currentMode = mode();
         if ("MANUAL".equals(currentMode)) {
             setTurnState(TurnState.MANUAL);
             return;
         }
 
-        SofiaEngine.Decision fast = SofiaEngine.fastDecision(customer, memory);
-        if (fast != null) {
-            log("path", "FAST_PATH");
-            handleGeneratedReply(fast.reply, currentMode);
+        if (brain == null) {
+            failSend("REBORN brain não inicializado");
             return;
         }
 
-        setTurnState(TurnState.THINKING);
-        control.edit().putString("suggested_reply", "").apply();
-        log("path", "QWEN");
-        final String prompt = SofiaEngine.buildPrompt(customer, memory);
-        worker.submit(() -> {
-            try {
-                String generated = QwenClient.generate(prompt);
-                String reply = sanitizeReply(generated);
-                log("qwen", "OK · " + LocalRebornEngine.lastGenerationMs() + " ms");
-                main.post(() -> handleGeneratedReply(reply, currentMode));
-            } catch (Throwable e) {
-                log("qwen", "ERRO: " + e.getClass().getSimpleName() + " " + safe(e.getMessage()));
-                main.post(() -> handleGeneratedReply(fallback(), currentMode));
+        boolean accepted = brain.acceptStableTurn(customer, currentMode, new RebornConversationOrchestrator.Callback() {
+            @Override public void onThinking() {
+                setTurnState(TurnState.THINKING);
+                control.edit().putString("suggested_reply", "").apply();
+                log("brain", "THINKING");
+            }
+
+            @Override public void onReply(String reply, boolean assisted) {
+                String cleanReply = clean(reply);
+                if (cleanReply.isEmpty()) {
+                    setTurnState(TurnState.LISTENING);
+                    return;
+                }
+
+                control.edit().putString("suggested_reply", cleanReply).apply();
+                log("brain", "REPLY_READY");
+
+                if (assisted) {
+                    setTurnState(TurnState.LISTENING);
+                    log("send", "WAITING_USER_APPROVAL");
+                    return;
+                }
+
+                appendTranscript("REBORN", cleanReply);
+                setTurnState(TurnState.SENDING);
+                sendReply(cleanReply, false);
+            }
+
+            @Override public void onError(String message) {
+                log("brain_error", safe(message));
             }
         });
-    }
 
-    private void handleGeneratedReply(String reply, String currentMode) {
-        String cleanReply = sanitizeReply(reply);
-        memory.setLastAssistant(cleanReply);
-        control.edit().putString("suggested_reply", cleanReply).apply();
-        if ("ASSISTED".equals(currentMode)) {
-            setTurnState(TurnState.LISTENING);
-            log("send", "WAITING_USER_APPROVAL");
-            return;
+        if (!accepted) {
+            if (brain.isBusy()) setTurnState(TurnState.THINKING);
+            else setTurnState(TurnState.LISTENING);
+            log("brain", "TURN_IGNORED_OR_DUPLICATE");
         }
-        appendTranscript("REBORN", cleanReply);
-        setTurnState(TurnState.SENDING);
-        sendReply(cleanReply, false);
     }
 
     private void captureManualCustomer(AccessibilityNodeInfo root, AccessibilityNodeInfo edit) {
@@ -273,7 +307,8 @@ public class SofiaAccessibilityService extends AccessibilityService {
             if (s.length() < 2 || s.length() > 300) continue;
             String l = canonical(s);
             if (isSamsungChrome(l)) continue;
-            if (l.equals(canonical(memory.getLastAssistant()))) continue;
+            String lastAssistant = brain == null ? memory.getLastAssistant() : brain.lastReply();
+            if (!lastAssistant.isEmpty() && l.equals(canonical(lastAssistant))) continue;
             if (l.equals(canonical(AUTO_INTRO))) continue;
             return s;
         }
@@ -317,8 +352,9 @@ public class SofiaAccessibilityService extends AccessibilityService {
                 failSend("SET_TEXT_FAILED");
                 return;
             }
+
             if (userApproved) {
-                memory.setLastAssistant(reply);
+                if (brain != null) brain.setAssistantMessage(reply);
                 appendTranscript("REBORN", reply);
             }
             main.postDelayed(() -> pressSend(reply, 0), 260L);
@@ -335,6 +371,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
 
         AccessibilityNodeInfo send = findSendButton(root);
         if (send == null) send = findSendButtonNearEditor(root, edit);
+
         if (send != null) {
             AccessibilityNodeInfo clickable = clickableSelfOrParent(send);
             if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
@@ -366,6 +403,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo root = findSamsungRoot();
         AccessibilityNodeInfo edit = root == null ? null : findEditable(root);
         String current = edit == null || edit.getText() == null ? "" : edit.getText().toString().trim();
+
         if (current.isEmpty() || !current.equals(expectedReply.trim())) {
             log("send", "SEND_CONFIRMED");
             control.edit().putString("suggested_reply", "").apply();
@@ -375,6 +413,7 @@ public class SofiaAccessibilityService extends AccessibilityService {
             }, 800L);
             return;
         }
+
         if (nextAttempt <= 2) {
             log("send", "NOT_SENT_ATTEMPT_" + nextAttempt);
             pressSend(expectedReply, nextAttempt);
@@ -421,7 +460,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
             boolean size = r.width() >= dp(20) && r.height() >= dp(20) && r.width() <= dp(180) && r.height() <= dp(180);
             if (right && row && size) {
                 int s = Math.abs(cx - editor.right) + Math.abs(cy - editor.centerY()) * 2;
-                if (s < bestScore[0]) { bestScore[0] = s; best[0] = node; }
+                if (s < bestScore[0]) {
+                    bestScore[0] = s;
+                    best[0] = node;
+                }
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) findSendCandidateRecursive(node.getChild(i), editor, best, bestScore);
@@ -439,7 +481,10 @@ public class SofiaAccessibilityService extends AccessibilityService {
     private void tapSendRightOfEditor(AccessibilityNodeInfo edit) {
         Rect r = new Rect();
         edit.getBoundsInScreen(r);
-        if (r.isEmpty()) { failSend("EDITOR_BOUNDS_EMPTY"); return; }
+        if (r.isEmpty()) {
+            failSend("EDITOR_BOUNDS_EMPTY");
+            return;
+        }
         int width = getResources().getDisplayMetrics().widthPixels;
         float x = Math.min(width - dp(26), r.right + dp(34));
         float y = r.centerY();
@@ -522,22 +567,16 @@ public class SofiaAccessibilityService extends AccessibilityService {
         lastProcessedAt = 0L;
         lastCustomer = "";
         transcript = "";
-        memory.setLastAssistant("");
-        control.edit().putString("live_customer", "").putString("live_customer_partial", "").putString("suggested_reply", "").putString("live_transcript", "").apply();
+        if (brain != null) brain.reset();
+        control.edit()
+                .putString("live_customer", "")
+                .putString("live_customer_partial", "")
+                .putString("suggested_reply", "")
+                .putString("live_transcript", "")
+                .apply();
         setTurnState(TurnState.IDLE);
         lastSamsungSeenAt = 0L;
         lastTextCallReadyAt = 0L;
-    }
-
-    private String fallback() {
-        return "Percebi. Diga-me só, por favor, qual é a principal coisa que gostaria de melhorar no serviço atual.";
-    }
-
-    private String sanitizeReply(String text) {
-        if (text == null) return fallback();
-        String out = clean(text).replaceFirst("(?i)^(SOFIA|REBORN)\\s*:\\s*", "");
-        if (out.length() > 420) out = out.substring(0, 420).trim();
-        return out.isEmpty() ? fallback() : out;
     }
 
     private String canonical(String s) {
@@ -546,24 +585,40 @@ public class SofiaAccessibilityService extends AccessibilityService {
         return x.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9€]+", " ").trim();
     }
 
-    private String clean(String s) { return s == null ? "" : s.replace('\n', ' ').replaceAll("\\s+", " ").trim(); }
-    private String lower(CharSequence s) { return s == null ? "" : s.toString().toLowerCase(Locale.ROOT); }
-    private String lower(String s) { return s == null ? "" : s.toLowerCase(Locale.ROOT); }
-    private String safe(String s) { return s == null ? "" : s.replace('\n', ' '); }
-    private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
+    private String clean(String s) {
+        return s == null ? "" : s.replace('\n', ' ').replaceAll("\\s+", " ").trim();
+    }
+
+    private String lower(CharSequence s) {
+        return s == null ? "" : s.toString().toLowerCase(Locale.ROOT);
+    }
+
+    private String lower(String s) {
+        return s == null ? "" : s.toLowerCase(Locale.ROOT);
+    }
+
+    private String safe(String s) {
+        return s == null ? "" : s.replace('\n', ' ');
+    }
+
+    private int dp(int n) {
+        return Math.round(n * getResources().getDisplayMetrics().density);
+    }
 
     private void log(String key, String value) {
         if (diag == null) diag = getSharedPreferences("sofia_diag", MODE_PRIVATE);
         diag.edit().putString(key, value == null ? "" : value).putLong("updated", System.currentTimeMillis()).apply();
     }
 
-    @Override public void onInterrupt() { log("service", "INTERRUPTED"); }
+    @Override public void onInterrupt() {
+        log("service", "INTERRUPTED");
+    }
 
     @Override public void onDestroy() {
         destroyed = true;
         main.removeCallbacksAndMessages(null);
         try { unregisterReceiver(commandReceiver); } catch (Throwable ignored) {}
-        worker.shutdownNow();
+        if (brain != null) brain.shutdown();
         super.onDestroy();
     }
 }
