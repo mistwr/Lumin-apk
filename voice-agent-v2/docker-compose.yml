@@ -5,8 +5,18 @@ services:
     environment:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
+      ASTERISK_ARI_URL: ${ASTERISK_ARI_URL:-http://host.docker.internal:8088/ari}
+      ASTERISK_ARI_USER: ${ASTERISK_ARI_USER:-reborn}
+      ASTERISK_ARI_PASSWORD: ${ASTERISK_ARI_PASSWORD}
+      ASTERISK_STASIS_APP: ${ASTERISK_STASIS_APP:-voicebot}
+      TWILIO_TRUNK_DOMAIN: ${TWILIO_TRUNK_DOMAIN}
+      TWILIO_ENDPOINT_NAME: ${TWILIO_ENDPOINT_NAME:-twilio}
+      TWILIO_CALLER_ID_E164: ${TWILIO_CALLER_ID_E164}
+      REBORN_GATEWAY_TOKEN: ${REBORN_GATEWAY_TOKEN}
     ports:
       - "127.0.0.1:8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - ollama
 
